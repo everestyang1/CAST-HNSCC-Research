@@ -1,8 +1,8 @@
-Columbia Irving Medical School
+**Columbia Irving Medical School - Cancer Research**
 
-Everest Yang, Ria Vasistha, Igor Shuryak
+**Everest Yang, Ria Vasistha, Igor Shuryak**
 
-A Causal Machine Learning Approach in Analyzing the Effects of Radiation Therapy on Oropharyngeal Cancer Survival
+**A Causal Machine Learning Approach in Analyzing the Effects of Radiation Therapy on Oropharyngeal Cancer Survival**
 
 How does radiation therapy impact survival outcomes in oropharyngeal cancer patients, and to what extent do demographic (age, gender) and health-related (HPV status, smoking history) characteristics play a role?
 
