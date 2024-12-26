@@ -10,21 +10,21 @@ An ongoing question in the study of head and neck cancer lies in determining the
 
 The research question of this project is centered around the causal effects of radiation treatment on survival outcomes for oropharyngeal cancer patients across subgroups. These subgroups include demographic characteristics, including gender and age, and health-related/behavioral characteristics, including HPV status and smoking. Crucially, HPV-positive oropharyngeal cancer patients generally have a higher overall survival rate than those with HPV-negative oropharyngeal cancer. The goal is to automate the treatment selection process by drawing from causal models. Thus, we decided on the research question.
 
-Dataset
+**Dataset**
 
 We have opted to use the RADCURE dataset. This includes data from a clinical study conducted in 2023. The dataset specifically includes oropharyngeal cancer (50% of the population), but also includes other head and neck cancers (Larynx cancer, 25%; Nasopharynx cancer, 12%; Hypopharynx cancer, 5%). 
 
 Note: While we can access the clinical data, we need NBIA Data Retriever and the TCIA Restricted License to access the imaging. It is 390 GB—we will likely need to use SSH to transfer and store the files on Columbia Med’s remote servers.
 
-Research Outline
+**Research Outline**
 
-1. Data Preparation & Cohort Selection
+**1. Data Preparation & Cohort Selection**
 Filter RADCURE dataset for oropharyngeal cancer patients (~1,673 patients)
 Define radiation intensity metrics (e.g., total dose, fractionation schedule)
 Structure survival outcome data (5-year follow-up data)
 Handle missing data appropriately - this is extremely important, we can discuss methods in our next scheduled meeting: dropNA, KNN, etc.
 
-2. Variable Definition
+**2. Variable Definition**
 
 A. Treatment Variables (T):
 Primary: Radiation dose intensity
@@ -45,7 +45,7 @@ GTVp (tumor volume)
 TNM staging
 HPV status
 
-3. ML Analysis Steps
+**3. ML Analysis Steps**
 
 A) Primary Analysis:
 Estimate average treatment effects (ATE)
