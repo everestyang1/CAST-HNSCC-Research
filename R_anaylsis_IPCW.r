@@ -206,7 +206,7 @@ run_causal_survival_analysis <- function(df, horizon = 24) {
   
   valid_horizon <- check_censoring(Y, D, horizon)
   if (is.null(valid_horizon)) {
-    stop(sprintf("Horizon %d months does not meet censoring requirements", horizon))
+    stop(sprintf("Horizon %d years does not meet censoring requirements", horizon))
   }
   
   weights <- calculate_ipcw(Y, D, X)
@@ -249,7 +249,7 @@ run_causal_survival_analysis <- function(df, horizon = 24) {
 analyze_followup <- function(df) {
 
   stats <- summary(df$Length_FU)
-  print("Follow-up Length Summary (months):")
+  print("Follow-up Length Summary (years):")
   print(stats)
   
   p <- ggplot(df, aes(x = Length_FU)) +
@@ -257,17 +257,17 @@ analyze_followup <- function(df) {
     geom_vline(xintercept = median(df$Length_FU, na.rm = TRUE), 
                color = "red", linetype = "dashed") +
     labs(title = "Distribution of Follow-up Length",
-         x = "Follow-up Length (months)",
+         x = "Follow-up Length (years)",
          y = "Count") +
     theme_bw()
   
-  # Print censoring information at different time points
+  # censoring information at different time points
   time_points <- c(1, 2, 3, 6, 12, 24)
   cat("\nCensoring proportions at different time points:\n")
   for(t in time_points) {
     n_risk <- sum(df$Length_FU >= t)
     n_total <- nrow(df)
-    cat(sprintf("%d months: %.1f%% remaining (%d/%d)\n", 
+    cat(sprintf("%d years: %.1f%% remaining (%d/%d)\n", 
                 t, 100*n_risk/n_total, n_risk, n_total))
   }
   n_events <- sum(df$event)
@@ -276,7 +276,6 @@ analyze_followup <- function(df) {
   
   return(p)
 }
-
 
 main_analysis <- function() {
   df <- read.csv("selected_data_with_sites.csv")
@@ -288,7 +287,7 @@ main_analysis <- function() {
   p <- analyze_followup(df)
   ggsave("followup_distribution.png", p)
   
-  suggested_horizons <- c(1, 2, 3)  # or any horizons you want to test
+  suggested_horizons <- c(1, 2, 3)  # or any horizons you want to test (in years)
   valid_horizons <- numeric(0)
   
   Y <- df$survival_time
@@ -307,17 +306,15 @@ main_analysis <- function() {
   all_results <- list()
   for (horizon in valid_horizons) {
     cat("\n----------------------------------------\n")
-    cat(sprintf("Analysis for horizon: %d months\n", horizon))
+    cat(sprintf("Analysis for horizon: %d years\n", horizon))
     cat("----------------------------------------\n")
     
     results <- run_causal_survival_analysis(df, horizon)
     
-    # Print key statistics
     cat(sprintf("Number of observations: %d\n", nrow(df)))
     cat(sprintf("Number of events: %d\n", sum(df$event)))
     cat(sprintf("Censoring rate: %.2f%%\n", (1 - mean(df$event)) * 100))
     
-    # Print ATE results
     cat("\nAverage Treatment Effect:\n")
     cat(sprintf("Estimate: %.3f\n", results$ate[1]))
     cat(sprintf("Standard Error: %.3f\n", results$ate[2]))
@@ -325,15 +322,12 @@ main_analysis <- function() {
                 results$ate[1] - 1.96*results$ate[2],
                 results$ate[1] + 1.96*results$ate[2]))
     
-    # Generate all visualizations
     plot_effects_by_stage(results, df)
     plot_variable_importance(results)
     
-    # Run and store subgroup analysis
     subgroup_results <- run_subgroup_analysis(results, df)
     results$subgroup_analysis <- subgroup_results
     
-    # Print subgroup results
     cat("\nSubgroup Analysis Results:\n")
     for (group_name in names(subgroup_results)) {
       cat(sprintf("\n%s:\n", group_name))
@@ -343,14 +337,12 @@ main_analysis <- function() {
                   subgroup_results[[group_name]]$ci_upper))
       cat(sprintf("  N: %d\n", subgroup_results[[group_name]]$n))
     }
-    
+
     all_results[[as.character(results$horizon)]] <- results
   }
-  
-  # Generate overall visualizations
+
   plot_km_curves(df)
   plot_hazard_ratios(df)
-  
   return(all_results)
 }
 
