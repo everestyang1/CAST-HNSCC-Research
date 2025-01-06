@@ -108,7 +108,7 @@ plot_effects_by_stage <- function(results, df) {
          x = "Stage",
          y = "Effect on Survival Probability") +
     theme_bw()
-  ggsave(sprintf("treatment_effects_by_stage_%dm.png", results$horizon), p)
+  ggsave(sprintf("treatment_effects_by_stage_%dy.png", results$horizon), p)
 }
 
 plot_variable_importance <- function(results) {
@@ -127,7 +127,7 @@ plot_variable_importance <- function(results) {
          x = "Variable", 
          y = "Importance") +
     theme_bw()
-  ggsave(sprintf("variable_importance_%dm.png", results$horizon), p)
+  ggsave(sprintf("variable_importance_%dy.png", results$horizon), p)
 }
 
 plot_hazard_ratios <- function(df) {
@@ -235,7 +235,7 @@ run_causal_survival_analysis <- function(df, horizon = 24) {
          x = "Effect on Survival Probability",
          y = "Count") +
     theme_bw()
-  ggsave(sprintf("treatment_effects_distribution_%dm.png", valid_horizon), p1)
+  ggsave(sprintf("treatment_effects_distribution_%dy.png", valid_horizon), p1)
   
   return(list(
     forest = cs_forest,
