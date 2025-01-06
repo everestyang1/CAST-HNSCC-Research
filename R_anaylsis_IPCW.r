@@ -103,7 +103,7 @@ plot_effects_by_stage <- function(results, df) {
     geom_point() +
     geom_errorbar(aes(ymin = mean_effect - 1.96*se, 
                       ymax = mean_effect + 1.96*se), width = 0.2) +
-    labs(title = sprintf("Treatment Effects by Stage at %d Month Horizon", 
+    labs(title = sprintf("Treatment Effects by Stage at %d Year Horizon", 
                         results$horizon),
          x = "Stage",
          y = "Effect on Survival Probability") +
@@ -122,7 +122,7 @@ plot_variable_importance <- function(results) {
   p <- ggplot(importance_df, aes(x = reorder(Variable, Importance), y = Importance)) +
     geom_bar(stat = "identity", fill = "steelblue") +
     coord_flip() +
-    labs(title = sprintf("Variable Importance in Causal Forest at %d Month Horizon",
+    labs(title = sprintf("Variable Importance in Causal Forest at %d Year Horizon",
                         results$horizon),
          x = "Variable", 
          y = "Importance") +
@@ -231,7 +231,7 @@ run_causal_survival_analysis <- function(df, horizon = 24) {
   p1 <- ggplot(effects_df, aes(x = effects)) +
     geom_histogram(bins = 30, fill = "lightblue", color = "black") +
     geom_vline(xintercept = ate[1], color = "red", linetype = "dashed") +
-    labs(title = sprintf("Distribution of Treatment Effects at %d Month Horizon", valid_horizon),
+    labs(title = sprintf("Distribution of Treatment Effects at %d Year Horizon", valid_horizon),
          x = "Effect on Survival Probability",
          y = "Count") +
     theme_bw()
