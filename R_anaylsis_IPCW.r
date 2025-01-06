@@ -246,11 +246,49 @@ run_causal_survival_analysis <- function(df, horizon = 24) {
   ))
 }
 
+analyze_followup <- function(df) {
+
+  stats <- summary(df$Length_FU)
+  print("Follow-up Length Summary (months):")
+  print(stats)
+  
+  p <- ggplot(df, aes(x = Length_FU)) +
+    geom_histogram(bins = 30, fill = "lightblue", color = "black") +
+    geom_vline(xintercept = median(df$Length_FU, na.rm = TRUE), 
+               color = "red", linetype = "dashed") +
+    labs(title = "Distribution of Follow-up Length",
+         x = "Follow-up Length (months)",
+         y = "Count") +
+    theme_bw()
+  
+  # Print censoring information at different time points
+  time_points <- c(1, 2, 3, 6, 12, 24)
+  cat("\nCensoring proportions at different time points:\n")
+  for(t in time_points) {
+    n_risk <- sum(df$Length_FU >= t)
+    n_total <- nrow(df)
+    cat(sprintf("%d months: %.1f%% remaining (%d/%d)\n", 
+                t, 100*n_risk/n_total, n_risk, n_total))
+  }
+  n_events <- sum(df$event)
+  cat(sprintf("\nTotal events: %d (%.1f%%)\n", 
+              n_events, 100*n_events/nrow(df)))
+  
+  return(p)
+}
+
+
 main_analysis <- function() {
   df <- read.csv("selected_data_with_sites.csv")
   df <- prepare_data(df)
+
+  cat("\n----------------------------------------\n")
+  cat("Analyzing Follow-up Length Distribution\n")
+  cat("----------------------------------------\n")
+  p <- analyze_followup(df)
+  ggsave("followup_distribution.png", p)
   
-  suggested_horizons <- c(1, 2, 3)  # or whatever horizons you want to test
+  suggested_horizons <- c(1, 2, 3)  # or any horizons you want to test
   valid_horizons <- numeric(0)
   
   Y <- df$survival_time
