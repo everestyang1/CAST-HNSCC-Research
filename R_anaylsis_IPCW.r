@@ -10,6 +10,101 @@ library(dplyr)
 library(ggplot2)
 library(survminer)
 
+simulate_simple_data <- function(n_samples = 2000, true_effect = 0.1, seed = 42) {
+  set.seed(seed)
+  
+  # Create basic covariates
+  data <- data.frame(
+    Age = rnorm(n_samples, mean = 60, sd = 10),
+    Stage = sample(1:4, n_samples, replace = TRUE),
+    HPV = rbinom(n_samples, 1, 0.6)
+  )
+  
+  # Assign treatment (high/low dose)
+  data$high_dose <- rbinom(n_samples, 1, 0.5)
+  
+  baseline_risk <- exp(0.01 * (data$Age - 60) + 0.2 * data$Stage) * 0.2
+
+  treatment_effect <- -log(1 - true_effect) * data$high_dose
+  data$true_time <- rexp(n_samples, rate = baseline_risk * exp(treatment_effect))
+  admin_censor <- rep(10, n_samples)
+  
+  random_censor <- rexp(n_samples, rate = 0.05) #i changed this down from 0.1
+  
+  data$time <- pmin(data$true_time, random_censor, admin_censor)
+  data$event <- as.numeric(data$true_time <= pmin(random_censor, admin_censor))
+  
+  return(data)
+}
+
+validate_methodology <- function() {
+
+  # Create simulated data with known 10% treatment effect
+  sim_data <- simulate_simple_data(n_samples = 2000, true_effect = 0.10)
+  
+  time_points <- c(1, 2, 3, 4, 5, 6) 
+  cat("\nCensoring pattern in simulated data:\n")
+  for(t in time_points) {
+    n_risk <- sum(sim_data$time >= t)
+    pct <- (n_risk/nrow(sim_data)) * 100
+    cat(sprintf("%d years: %.1f%% remaining (%d/%d)\n", 
+                t, pct, n_risk, nrow(sim_data)))
+  }
+  
+  horizons <- c(1, 2, 3, 4, 5, 6)
+  results <- list()
+  
+  for(h in horizons) {
+    cat(sprintf("\nTesting horizon: %d years\n", h))
+    
+    valid_horizon <- check_censoring(sim_data$time, sim_data$event, h)
+    if(is.null(valid_horizon)) {
+      cat("Invalid horizon due to censoring\n")
+      next
+    }
+    
+    X <- as.matrix(sim_data[, c("Age", "Stage", "HPV")])
+    W <- sim_data$high_dose
+    Y <- sim_data$time
+    D <- sim_data$event
+    
+    weights <- calculate_ipcw(Y, D, X)
+    
+    cs_forest <- causal_survival_forest(
+      X = X,
+      W = W,
+      Y = Y,
+      D = D,
+      horizon = valid_horizon,
+      num.trees = 1000,
+      sample.weights = weights
+    )
+    
+    ate <- average_treatment_effect(cs_forest)
+    
+    results[[as.character(h)]] <- list(
+      horizon = h,
+      estimated_effect = ate[1],
+      se = ate[2],
+      n_at_risk = sum(Y >= h),
+      percent_remaining = mean(Y >= h) * 100
+    )
+    
+    cat("\nResults for horizon", h, "years:\n")
+    cat(sprintf("  Estimated effect: %.1f%%\n", ate[1] * 100))
+    cat(sprintf("  Standard error: %.1f%%\n", ate[2] * 100))
+    cat(sprintf("  Patients at risk: %d (%.1f%%)\n", 
+                sum(Y >= h), mean(Y >= h) * 100))
+    cat(sprintf("  True effect: 10.0%%\n"))
+    cat("\n")
+  }
+  
+  return(results)
+}
+
+
+#real dataset/anaylsis
+
 prepare_data <- function(df) {
   df %>%
     mutate(
@@ -346,4 +441,8 @@ main_analysis <- function() {
   return(all_results)
 }
 
+cat("\nRunning methodology validation with simulated data...\n")
+validation_results <- validate_methodology()
+
+cat("\nRunning main analysis with real data...\n")
 results <- main_analysis()
