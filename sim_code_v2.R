@@ -24,136 +24,138 @@ library(GGally)
 library(dplyr)
 
 
-# simulate data
+# # simulate data
 
-n_samples <- 5000
-set.seed(199)
+# n_samples <- 5000
+# set.seed(199)
 
-data <- data.frame(
-  Age = rnorm(n_samples, mean = 60, sd = 10),
-  Stage = sample(1:4, n_samples, replace = TRUE),
-  Chemotherapy = rbinom(n_samples, 1, 0.5),
-  HPV = rbinom(n_samples, 1, 0.6),
-  Smoking = rbinom(n_samples, 1, 0.25),
-  TumorSite_OralCavity = as.numeric(sample(1:4, n_samples, replace = TRUE) == 1),
-  TumorSite_Oropharynx = as.numeric(sample(1:4, n_samples, replace = TRUE) == 2),
-  TumorSite_Larynx = as.numeric(sample(1:4, n_samples, replace = TRUE) == 3),
-  TumorSite_Hypopharynx = as.numeric(sample(1:4, n_samples, replace = TRUE) == 4),
-  Comorbidities_0 = as.numeric(sample(0:2, n_samples, replace = TRUE, prob = c(0.5, 0.3, 0.2)) == 0),
-  Comorbidities_1 = as.numeric(sample(0:2, n_samples, replace = TRUE, prob = c(0.5, 0.3, 0.2)) == 1),
-  Comorbidities_2plus = as.numeric(sample(0:2, n_samples, replace = TRUE, prob = c(0.5, 0.3, 0.2)) == 2),
-  NeckDissection = rbinom(n_samples, 1, 0.4),
-  FeedingTube = rbinom(n_samples, 1, 0.2),
-  Tracheostomy = rbinom(n_samples, 1, 0.1),
-  AlcoholUse_None = as.numeric(sample(1:3, n_samples, replace = TRUE) == 1),
-  AlcoholUse_Moderate = as.numeric(sample(1:3, n_samples, replace = TRUE) == 2),
-  AlcoholUse_Heavy = as.numeric(sample(1:3, n_samples, replace = TRUE) == 3),
-  Education_HighSchool = as.numeric(sample(1:3, n_samples, replace = TRUE) == 1),
-  Education_College = as.numeric(sample(1:3, n_samples, replace = TRUE) == 2),
-  Education_Graduate = as.numeric(sample(1:3, n_samples, replace = TRUE) == 3),
-  MaritalStatus_Single = as.numeric(sample(1:3, n_samples, replace = TRUE) == 1),
-  MaritalStatus_Married = as.numeric(sample(1:3, n_samples, replace = TRUE) == 2),
-  MaritalStatus_Divorced = as.numeric(sample(1:3, n_samples, replace = TRUE) == 3),
-  BMI = rnorm(n_samples, mean = 25, sd = 4),
-  PerformanceStatus_0 = as.numeric(sample(0:4, n_samples, replace = TRUE, prob = c(0.3, 0.3, 0.2, 0.1, 0.1)) == 0),
-  PerformanceStatus_1 = as.numeric(sample(0:4, n_samples, replace = TRUE, prob = c(0.3, 0.3, 0.2, 0.1, 0.1)) == 1),
-  PerformanceStatus_2 = as.numeric(sample(0:4, n_samples, replace = TRUE, prob = c(0.3, 0.3, 0.2, 0.1, 0.1)) == 2),
-  PerformanceStatus_3 = as.numeric(sample(0:4, n_samples, replace = TRUE, prob = c(0.3, 0.3, 0.2, 0.1, 0.1)) == 3),
-  PerformanceStatus_4 = as.numeric(sample(0:4, n_samples, replace = TRUE, prob = c(0.3, 0.3, 0.2, 0.1, 0.1)) == 4)
-) 
+# data <- data.frame(
+#   Age = rnorm(n_samples, mean = 60, sd = 10),
+#   Stage = sample(1:4, n_samples, replace = TRUE),
+#   Chemotherapy = rbinom(n_samples, 1, 0.5),
+#   HPV = rbinom(n_samples, 1, 0.6),
+#   Smoking = rbinom(n_samples, 1, 0.25),
+#   TumorSite_OralCavity = as.numeric(sample(1:4, n_samples, replace = TRUE) == 1),
+#   TumorSite_Oropharynx = as.numeric(sample(1:4, n_samples, replace = TRUE) == 2),
+#   TumorSite_Larynx = as.numeric(sample(1:4, n_samples, replace = TRUE) == 3),
+#   TumorSite_Hypopharynx = as.numeric(sample(1:4, n_samples, replace = TRUE) == 4),
+#   Comorbidities_0 = as.numeric(sample(0:2, n_samples, replace = TRUE, prob = c(0.5, 0.3, 0.2)) == 0),
+#   Comorbidities_1 = as.numeric(sample(0:2, n_samples, replace = TRUE, prob = c(0.5, 0.3, 0.2)) == 1),
+#   Comorbidities_2plus = as.numeric(sample(0:2, n_samples, replace = TRUE, prob = c(0.5, 0.3, 0.2)) == 2),
+#   NeckDissection = rbinom(n_samples, 1, 0.4),
+#   FeedingTube = rbinom(n_samples, 1, 0.2),
+#   Tracheostomy = rbinom(n_samples, 1, 0.1),
+#   AlcoholUse_None = as.numeric(sample(1:3, n_samples, replace = TRUE) == 1),
+#   AlcoholUse_Moderate = as.numeric(sample(1:3, n_samples, replace = TRUE) == 2),
+#   AlcoholUse_Heavy = as.numeric(sample(1:3, n_samples, replace = TRUE) == 3),
+#   Education_HighSchool = as.numeric(sample(1:3, n_samples, replace = TRUE) == 1),
+#   Education_College = as.numeric(sample(1:3, n_samples, replace = TRUE) == 2),
+#   Education_Graduate = as.numeric(sample(1:3, n_samples, replace = TRUE) == 3),
+#   MaritalStatus_Single = as.numeric(sample(1:3, n_samples, replace = TRUE) == 1),
+#   MaritalStatus_Married = as.numeric(sample(1:3, n_samples, replace = TRUE) == 2),
+#   MaritalStatus_Divorced = as.numeric(sample(1:3, n_samples, replace = TRUE) == 3),
+#   BMI = rnorm(n_samples, mean = 25, sd = 4),
+#   PerformanceStatus_0 = as.numeric(sample(0:4, n_samples, replace = TRUE, prob = c(0.3, 0.3, 0.2, 0.1, 0.1)) == 0),
+#   PerformanceStatus_1 = as.numeric(sample(0:4, n_samples, replace = TRUE, prob = c(0.3, 0.3, 0.2, 0.1, 0.1)) == 1),
+#   PerformanceStatus_2 = as.numeric(sample(0:4, n_samples, replace = TRUE, prob = c(0.3, 0.3, 0.2, 0.1, 0.1)) == 2),
+#   PerformanceStatus_3 = as.numeric(sample(0:4, n_samples, replace = TRUE, prob = c(0.3, 0.3, 0.2, 0.1, 0.1)) == 3),
+#   PerformanceStatus_4 = as.numeric(sample(0:4, n_samples, replace = TRUE, prob = c(0.3, 0.3, 0.2, 0.1, 0.1)) == 4)
+# ) 
 
-str(data)
+# str(data)
 
-# causal (treatment) feature
-Cause <- rbinom(n_samples, 1, 0.5)
+# # causal (treatment) feature
+# Cause <- rbinom(n_samples, 1, 0.5)
 
-# survival time with true effect
+# # survival time with true effect
 
-true_effect <- 12
+# true_effect <- 12
 
-Survival_time <- 6+round(pmax(rnorm(n_samples, mean = 10 + true_effect*Cause, sd = 7), 1), 0)
+# Survival_time <- 6+round(pmax(rnorm(n_samples, mean = 10 + true_effect*Cause, sd = 7), 1), 0)
 
-# Survival status with censoring
-#Survival_status <- rbinom(n_samples, 1, 0.5)
+# # Survival status with censoring
+# #Survival_status <- rbinom(n_samples, 1, 0.5)
 
-censoring_prob <- function(time) {
-  pmin(0.01 + 0.2 * (time / max(time)), 0.95)  
-}
+# censoring_prob <- function(time) {
+#   pmin(0.01 + 0.2 * (time / max(time)), 0.95)  
+# }
 
-# Generate survival status with increasing censoring probability
-Survival_status <- rbinom(n_samples, 1, 1 - censoring_prob(Survival_time))
+# # Generate survival status with increasing censoring probability
+# Survival_status <- rbinom(n_samples, 1, 1 - censoring_prob(Survival_time))
 
-cor(Survival_time, Survival_status)
+# cor(Survival_time, Survival_status)
 
 
-# compile dataset
-cancer_data_encoded <- cbind(data, Cause, Survival_time, Survival_status)
-str(cancer_data_encoded)
+# # compile dataset
+# cancer_data_encoded <- cbind(data, Cause, Survival_time, Survival_status)
+# str(cancer_data_encoded)
 
-######
+# ######
 
-# check censoring
+# # check censoring
 
-check_censoring <- function(Y, D, horizon) {
-  km_cens <- survfit(Surv(Y, 1-D) ~ 1)
-  times <- sort(unique(Y[Y <= horizon]))
-  probs <- summary(km_cens, times = times)$surv
+# check_censoring <- function(Y, D, horizon) {
+#   km_cens <- survfit(Surv(Y, 1-D) ~ 1)
+#   times <- sort(unique(Y[Y <= horizon]))
+#   probs <- summary(km_cens, times = times)$surv
   
-  n_total <- length(Y)
-  valid_horizons <- times[which(
-    probs > 0.05 &
-      sapply(times, function(t) sum(Y >= t)) > 0.1 * n_total
-  )]
+#   n_total <- length(Y)
+#   valid_horizons <- times[which(
+#     probs > 0.05 &
+#       sapply(times, function(t) sum(Y >= t)) > 0.1 * n_total
+#   )]
   
-  if (length(valid_horizons) == 0) return(NULL)
+#   if (length(valid_horizons) == 0) return(NULL)
   
-  valid_horizon <- max(valid_horizons[valid_horizons <= horizon])
-  if (is.null(valid_horizon) || is.infinite(valid_horizon)) {
-    valid_horizon <- max(valid_horizons)
-  }
+#   valid_horizon <- max(valid_horizons[valid_horizons <= horizon])
+#   if (is.null(valid_horizon) || is.infinite(valid_horizon)) {
+#     valid_horizon <- max(valid_horizons)
+#   }
   
-  # Calculate fraction of non-censored samples at the valid horizon
-  fraction_non_censored <- sum(Y >= valid_horizon & D == 1) / n_total
+#   # Calculate fraction of non-censored samples at the valid horizon
+#   fraction_non_censored <- sum(Y >= valid_horizon & D == 1) / n_total
   
-  return(list(valid_horizon = valid_horizon, fraction_non_censored = fraction_non_censored))
-}
+#   return(list(valid_horizon = valid_horizon, fraction_non_censored = fraction_non_censored))
+# }
 
-# set horizons
-horizons <- c(12*1, 12*2, 12*3, 12*4, 12*5)
+# # set horizons
+# horizons <- c(12*1, 12*2, 12*3, 12*4, 12*5)
 
-for(h in horizons) {
-  cat(sprintf("\nTesting horizon: %d months", h))
+# for(h in horizons) {
+#   cat(sprintf("\nTesting horizon: %d months", h))
   
-  result <- check_censoring(cancer_data_encoded$Survival_time, cancer_data_encoded$Survival_status, h)
-  if(is.null(result)) {
-    cat("\nInvalid horizon due to censoring\n")
-    next
-  }
+#   result <- check_censoring(cancer_data_encoded$Survival_time, cancer_data_encoded$Survival_status, h)
+#   if(is.null(result)) {
+#     cat("\nInvalid horizon due to censoring\n")
+#     next
+#   }
   
-  cat(sprintf("\nValid horizon: %d months", result$valid_horizon))
-  cat(sprintf("\nFraction of non-censored samples: %.2f%%\n", result$fraction_non_censored * 100))
-}
+#   cat(sprintf("\nValid horizon: %d months", result$valid_horizon))
+#   cat(sprintf("\nFraction of non-censored samples: %.2f%%\n", result$fraction_non_censored * 100))
+# }
 
 
 
-#######
-# summarize continuous variables
-library(reshape2)
-continuous_vars <- sapply(cancer_data_encoded, function(x) length(unique(x)) > 2)
-continuous_data <- cancer_data_encoded[, continuous_vars]
+# #######
+# # summarize continuous variables
+# library(reshape2)
+# continuous_vars <- sapply(cancer_data_encoded, function(x) length(unique(x)) > 2)
+# continuous_data <- cancer_data_encoded[, continuous_vars]
 
-summary_data <- summary(continuous_data)
-summary_df <- as.data.frame(summary_data)
+# summary_data <- summary(continuous_data)
+# summary_df <- as.data.frame(summary_data)
 
-# Write the dataframe to a CSV file
-write.csv(summary_df, file = "summary_continuous_data.csv", row.names = FALSE)
+# # Write the dataframe to a CSV file
+# write.csv(summary_df, file = "summary_continuous_data.csv", row.names = FALSE)
 
-##########
+# ##########
 
-
+cancer_data_encoded <- read.csv("cancer_data_chemo_cause.csv")
 # Prepare data for ML analysis
 # Create training and test sets
 set.seed(99)
+
+
 index <- createDataPartition(cancer_data_encoded$Survival_status, p=0.75, list=FALSE)
 trainSet <- cancer_data_encoded[index,]
 testSet <- cancer_data_encoded[-index,]
@@ -321,7 +323,7 @@ ggsave(filename = "Kaplan_Meier_Survival_Curves_risk_table.png", plot = p_KM$tab
 
 # Implement causal forests
 n_trees_val <- 5000
-#horizons <- c(12*1, 12*2, 12*3, 12*4, 12*5)
+horizons <- c(12*1, 12*2, 12*3, 12*4, 12*5)
 results_SP <- data.frame(horizon_sel = integer(), ATE_estimate_train_SP = numeric(), ATE_se_train_SP = numeric(),
                       ATE_estimate_test_SP = numeric(), ATE_se_test_SP = numeric())
 
