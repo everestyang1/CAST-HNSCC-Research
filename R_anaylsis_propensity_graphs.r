@@ -160,12 +160,13 @@ summarize_propensity <- function(scores, label = "") {
   cat(sprintf("  SD: %.3f\n", sd(scores)))
 }
 
-# Modified analysis parameters for causal forest
 run_analysis <- function(X, W, Y, D, horizon, method = "propensity") {
   valid_horizon <- check_censoring(Y, D, horizon)
   if (is.null(valid_horizon)) {
     stop(sprintf("Horizon %d years does not meet censoring requirements", horizon))
   }
+  
+  keep_indices <- rep(TRUE, length(W))
   
   if (method == "propensity") {
     prop_scores <- calculate_propensity_scores(X, W)
@@ -185,16 +186,14 @@ run_analysis <- function(X, W, Y, D, horizon, method = "propensity") {
       Y = Y_trimmed,
       D = D_trimmed,
       horizon = valid_horizon,
-      num.trees = 6000,  # Increased number of trees
+      num.trees = 6000,
       honesty = TRUE,
       min.node.size = 5,
       alpha = 0.05,
-      imbalance.penalty = 0.1,  # Added imbalance penalty
-      stabilize.splits = TRUE,  # Added split stabilization
+      imbalance.penalty = 0.1,
+      stabilize.splits = TRUE,
       seed = 42
     )
-    
-    n_excluded <- sum(!keep_indices)
     
   } else {
     cs_forest <- causal_survival_forest(
@@ -211,7 +210,6 @@ run_analysis <- function(X, W, Y, D, horizon, method = "propensity") {
       stabilize.splits = TRUE,
       seed = 42
     )
-    n_excluded <- 0
   }
   
   ate <- average_treatment_effect(cs_forest)
@@ -222,7 +220,8 @@ run_analysis <- function(X, W, Y, D, horizon, method = "propensity") {
     predictions = predictions,
     ate = ate,
     horizon = valid_horizon,
-    n_excluded = n_excluded
+    n_excluded = sum(!keep_indices),
+    keep_indices = keep_indices
   ))
 }
 
@@ -243,6 +242,106 @@ plot_effects_distribution <- function(results, method, horizon) {
          width = 7, height = 7)
 }
 
+plot_propensity_distributions <- function(scores, W, keep_indices = NULL, title = "Propensity Score Distributions by Treatment Group") {
+
+  if (!is.null(keep_indices)) {
+    scores <- scores[keep_indices]
+    W <- W[keep_indices]
+  }
+  
+  W <- as.numeric(W)
+  
+  scores_df <- data.frame(
+    propensity = scores,
+    treatment = factor(W, levels = c(0, 1), labels = c("Low Dose", "High Dose"))
+  )
+  
+  p <- ggplot(scores_df, aes(x = propensity, fill = treatment)) +
+    geom_density(alpha = 0.5) +
+    labs(title = title,
+         x = "Propensity Score",
+         y = "Density",
+         fill = "Treatment Group") +
+    theme_bw()
+  
+  ggsave(paste0("propensity_dist_", gsub(" ", "_", tolower(title)), ".png"), p, 
+         width = 8, height = 6)
+  
+  return(p)
+}
+
+plot_survival_curves <- function(Y, D, W, title = "Kaplan-Meier Survival Curves by Treatment Group") {
+  surv_data <- data.frame(
+    time = Y,
+    status = D,
+    treatment = factor(W, labels = c("Low Dose", "High Dose"))
+  )
+  
+  fit <- survfit(Surv(time, status) ~ treatment, data = surv_data)
+  
+  p <- ggsurvplot(fit,
+             data = surv_data,
+             title = title,
+             xlab = "Time (years)",
+             ylab = "Survival Probability",
+             conf.int = TRUE,
+             risk.table = TRUE,
+             pval = TRUE)
+  
+  # Save the plot
+  ggsave(paste0("survival_curves_", gsub(" ", "_", tolower(title)), ".png"), 
+         p$plot, width = 10, height = 8)
+}
+
+plot_covariate_balance <- function(X, W, varnames = NULL) {
+  if(is.null(varnames)) varnames <- colnames(X)
+  
+  balance_stats <- data.frame(
+    variable = varnames,
+    diff = sapply(1:ncol(X), function(i) 
+      mean(X[W==1,i]) - mean(X[W==0,i])),
+    se = sapply(1:ncol(X), function(i) 
+      sqrt(var(X[W==1,i])/sum(W==1) + var(X[W==0,i])/sum(W==0)))
+  )
+  
+  p <- ggplot(balance_stats, aes(x = variable, y = diff)) +
+    geom_point() +
+    geom_errorbar(aes(ymin = diff - 1.96*se, ymax = diff + 1.96*se), width = 0.2) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    coord_flip() +
+    labs(title = "Standardized Mean Differences",
+         x = "Covariate",
+         y = "Standardized Mean Difference") +
+    theme_bw()
+  
+  ggsave("covariate_balance.png", p, width = 8, height = 6)
+}
+
+plot_treatment_effects_by_covariate <- function(predictions, X, var_name, 
+                                              keep_indices = NULL,
+                                              title = "Treatment Effects by Covariate") {
+  if (!is.null(keep_indices)) {
+    X <- X[keep_indices, ]
+  }
+  
+  effects_df <- data.frame(
+    effect = predictions$predictions,
+    covariate = X[, var_name]
+  )
+  
+  p <- ggplot(effects_df, aes(x = covariate, y = effect)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "loess", se = TRUE) +
+    labs(title = paste(title, "-", var_name),
+         x = var_name,
+         y = "Estimated Treatment Effect") +
+    theme_bw()
+  
+  ggsave(paste0("effects_by_", tolower(var_name), ".png"), p, width = 8, height = 6)
+  
+  return(p)
+}
+
 # Main analysis
 main <- function() {
   # Part 1: Simulation Study
@@ -256,6 +355,10 @@ main <- function() {
   
   horizons <- c(1, 2, 3)
   sim_results <- list()
+  
+  # Initial simulation plots
+  plot_survival_curves(Y_sim, D_sim, W_sim, "Simulation Data - Overall Survival")
+  plot_covariate_balance(X_sim, W_sim, colnames(X_sim))
   
   for (h in horizons) {
     cat(sprintf("\nAnalyzing horizon: %d years\n", h))
@@ -283,9 +386,27 @@ main <- function() {
     cat(sprintf("  Standard error: %.1f%%\n", orig_results$ate[2] * 100))
     cat(sprintf("True effect: 10.0%%\n"))
     
-    # Plot distributions
+    # Generate plots for simulation data
     plot_effects_distribution(prop_results, "propensity", h)
     plot_effects_distribution(orig_results, "original", h)
+    
+    plot_propensity_distributions(
+      prop_results$forest$W.hat, 
+      W_sim, 
+      keep_indices = prop_results$keep_indices,
+      paste("Simulation Data - Horizon", h)
+    )
+    
+    # Plot treatment effects by covariates
+    for(var in c("Age", "Stage", "HPV")) {
+      plot_treatment_effects_by_covariate(
+        prop_results$predictions, 
+        X_sim, 
+        var,
+        keep_indices = prop_results$keep_indices,
+        paste("Simulation - Horizon", h)
+      )
+    }
   }
   
   # Part 2: Real Data Analysis
@@ -314,6 +435,10 @@ main <- function() {
   Y_real <- real_data$survival_time
   D_real <- real_data$event
   
+  # Initial real data plots
+  plot_survival_curves(Y_real, D_real, W_real, "Real Data - Overall Survival")
+  plot_covariate_balance(X_real, W_real, colnames(X_real))
+  
   real_results <- list()
   
   for (h in c(1, 2, 3)) {
@@ -328,7 +453,6 @@ main <- function() {
       original = orig_results
     )
     
-    # Print results
     cat("\nPropensity Score Method:\n")
     cat(sprintf("  Estimated effect: %.1f%%\n", prop_results$ate[1] * 100))
     cat(sprintf("  Standard error: %.1f%%\n", prop_results$ate[2] * 100))
@@ -340,9 +464,25 @@ main <- function() {
     cat(sprintf("  Estimated effect: %.1f%%\n", orig_results$ate[1] * 100))
     cat(sprintf("  Standard error: %.1f%%\n", orig_results$ate[2] * 100))
     
-    # Plot distributions
+    # Generate plots for real data
     plot_effects_distribution(prop_results, "propensity_real", h)
     plot_effects_distribution(orig_results, "original_real", h)
+    plot_propensity_distributions(
+      prop_results$forest$W.hat, 
+      W_real, 
+      keep_indices = prop_results$keep_indices,
+      paste("Real Data - Horizon", h)
+    )
+    
+    for(var in c("Age", "Stage_numeric", "HPV_Positive")) {
+      plot_treatment_effects_by_covariate(
+        prop_results$predictions, 
+        X_real, 
+        var,
+        keep_indices = prop_results$keep_indices,
+        paste("Real Data - Horizon", h)
+      )
+    }
   }
   
   return(list(
@@ -351,5 +491,4 @@ main <- function() {
   ))
 }
 
-# Run the analysis
 results <- main()
