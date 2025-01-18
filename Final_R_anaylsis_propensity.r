@@ -665,6 +665,172 @@ dummy_results <- perform_dummy_outcome_tests(
   output_dir = "dummy_outcome_results"
 )
 
+########
+# refutation tests with fake confounders
+
+refutation_fake_confounder_tests <- function(trainSet_X, trainSet_W, trainSet_times, trainSet_events,
+                                          W_hat_train_adj2, testSet_X, testSet_W, testSet_times, 
+                                          testSet_events, W_hat_test_adj2,
+                                          num_repetitions = 20, n_trees_val = 3000,
+                                          confounder_strength = c(0.1, 0.3, 0.5),
+                                          seed = 1234, output_dir = ".") {
+  
+  set.seed(seed)
+  dir.create(output_dir, showWarnings = FALSE)
+  
+  horizons <- seq(10, 50, by=5)
+  
+  generate_fake_confounder <- function(X, strength) {
+    n <- nrow(X)
+    # Create confounder correlated with covariates
+    Z <- scale(as.matrix(X)) %*% rnorm(ncol(X)) * strength + rnorm(n) * (1 - strength)
+    return(scale(Z)) # Standardize confounder
+  }
+  
+  results <- data.frame(
+    Repetition = integer(),
+    Horizon = integer(),
+    Strength = numeric(),
+    Target = character(),
+    Original_ATE = numeric(),
+    Confounded_ATE = numeric(),
+    ATE_Difference = numeric(),
+    Original_SE = numeric(),
+    Confounded_SE = numeric()
+  )
+  
+  for(strength in confounder_strength) {
+    for(rep in 1:num_repetitions) {
+      Z_train <- generate_fake_confounder(trainSet_X, strength)
+      Z_test <- generate_fake_confounder(testSet_X, strength)
+      
+      # fake confounder to feature matrices
+      trainSet_X_augmented <- cbind(trainSet_X, fake_confounder = Z_train)
+      testSet_X_augmented <- cbind(testSet_X, fake_confounder = Z_test)
+      
+      for(horizon in horizons) {
+        # survival probability and RMST targets
+        for(target in c("survival.probability", "RMST")) {
+
+          original_forest <- causal_survival_forest(
+            X = trainSet_X,
+            Y = trainSet_times,
+            W = trainSet_W,
+            D = trainSet_events,
+            W.hat = as.vector(W_hat_train_adj2),
+            num.trees = n_trees_val,
+            target = target,
+            horizon = horizon,
+            seed = seed + rep
+          )
+          
+          confounded_forest <- causal_survival_forest(
+            X = trainSet_X_augmented,
+            Y = trainSet_times,
+            W = trainSet_W,
+            D = trainSet_events,
+            W.hat = as.vector(W_hat_train_adj2),
+            num.trees = n_trees_val,
+            target = target,
+            horizon = horizon,
+            seed = seed + rep
+          )
+          
+          pred_original <- predict(original_forest, testSet_X)
+          pred_confounded <- predict(confounded_forest, testSet_X_augmented)
+          
+          ate_original <- mean(pred_original$predictions)
+          ate_confounded <- mean(pred_confounded$predictions)
+          
+          se_original <- sqrt(mean(pred_original$variance.estimates))
+          se_confounded <- sqrt(mean(pred_confounded$variance.estimates))
+          
+          results <- rbind(results, data.frame(
+            Repetition = rep,
+            Horizon = horizon,
+            Strength = strength,
+            Target = target,
+            Original_ATE = ate_original,
+            Confounded_ATE = ate_confounded,
+            ATE_Difference = abs(ate_original - ate_confounded),
+            Original_SE = se_original,
+            Confounded_SE = se_confounded
+          ))
+        }
+      }
+      
+      cat(sprintf("Completed repetition %d for strength %.1f\n", rep, strength))
+    }
+  }
+  
+  write.csv(results, file.path(output_dir, "fake_confounder_results.csv"), row.names = FALSE)
+  
+  for(target_type in c("survival.probability", "RMST")) {
+    target_data <- subset(results, Target == target_type)
+    
+    p <- ggplot(target_data, aes(x = as.factor(Horizon), y = ATE_Difference, fill = as.factor(Strength))) +
+      geom_boxplot() +
+      facet_wrap(~Strength, labeller = label_both) +
+      labs(title = paste("ATE Differences with Fake Confounders -", target_type),
+           x = "Horizon",
+           y = "Absolute ATE Difference",
+           fill = "Confounder Strength") +
+      theme_bw() +
+      theme(
+        axis.text = element_text(face = "bold", size = 12),
+        axis.title = element_text(face = "bold", size = 14),
+        plot.title = element_text(face = "bold", size = 16),
+        legend.title = element_text(face = "bold", size = 12),
+        legend.text = element_text(face = "bold", size = 10)
+      )
+    
+    ggsave(
+      file.path(output_dir, paste0("fake_confounder_effects_", tolower(target_type), ".png")),
+      p,
+      width = 12,
+      height = 8,
+      dpi = 600
+    )
+  }
+  
+  summary_stats <- results %>%
+    group_by(Strength, Target) %>%
+    summarise(
+      Mean_ATE_Diff = mean(ATE_Difference),
+      SD_ATE_Diff = sd(ATE_Difference),
+      Max_ATE_Diff = max(ATE_Difference),
+      Mean_Original_SE = mean(Original_SE),
+      Mean_Confounded_SE = mean(Confounded_SE)
+    )
+  
+  write.csv(summary_stats, file.path(output_dir, "fake_confounder_summary.csv"), row.names = FALSE)
+  
+  return(list(
+    detailed_results = results,
+    summary_stats = summary_stats
+  ))
+}
+
+# refutation tests with fake confounders
+refutation_results <- refutation_fake_confounder_tests(
+  trainSet_X = trainSet_X,
+  trainSet_W = trainSet_W,
+  trainSet_times = trainSet_times,
+  trainSet_events = trainSet_events,
+  W_hat_train_adj2 = W_hat_train_adj2,
+  testSet_X = testSet_X,
+  testSet_W = testSet_W,
+  testSet_times = testSet_times,
+  testSet_events = testSet_events,
+  W_hat_test_adj2 = W_hat_test_adj2,
+  # You can reduce/add if necessary b/c right now it is taking too long to run
+  num_repetitions = 10,
+  output_dir = "refutation_test_results"
+)
+
+print("Summary of refutation test results:")
+print(refutation_results$summary_stats)
+
 sp_results <- dummy_results$SP_results
 rmst_results <- dummy_results$RMST_results
 
