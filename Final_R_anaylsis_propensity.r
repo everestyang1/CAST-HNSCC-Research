@@ -203,7 +203,6 @@ prepare_cancer_data <- function(data_set, seed = 99) {
   Y_vector_train <- trainSet$Cause
   X_matrix_test <- model.matrix(~ . - Cause - time - event, data = testSet)[,-1]
   
-  # Return a list containing all the prepared data
   return(list(
     trainSet = trainSet,
     testSet = testSet,
@@ -221,13 +220,10 @@ prepare_cancer_data <- function(data_set, seed = 99) {
   ))
 }
 
-
 # Call the function on simulated data
 prepared_data <- prepare_cancer_data(simulated_data)
 # or read real data instead
 
-
-# Access the prepared data
 trainSet <- prepared_data$trainSet
 testSet <- prepared_data$testSet
 trainSet_X <- prepared_data$trainSet_X
@@ -241,7 +237,6 @@ testSet_events <- prepared_data$testSet_events
 X_matrix_train <- prepared_data$X_matrix_train
 Y_vector_train <- prepared_data$Y_vector_train
 X_matrix_test <- prepared_data$X_matrix_test
-
 
 
 ##########
@@ -283,10 +278,8 @@ ggsave(filename = "Kaplan_Meier_Survival_Curves.png", plot = p_KM$plot, dpi = 30
 ggsave(filename = "Kaplan_Meier_Survival_Curves_risk_table.png", plot = p_KM$table, dpi = 300,
        width = 10, height = 4)
 
-
 #######
 # propensity score model
-
 
 fit_propensity_model <- function(trainSet, testSet, seed = 1234, alpha_range = seq(0.01, 0.99, by = 0.01), output_dir = ".") {
   # Create output directory if it doesn't exist
@@ -318,7 +311,7 @@ fit_propensity_model <- function(trainSet, testSet, seed = 1234, alpha_range = s
                         lambda = optimal_lambda)
   cv_glmnet_model <- final_model
   
-  # Save model coefficients
+  # model coefficients
   cv_glmnet_model_coefs <- as.data.frame(as.matrix(coef(cv_glmnet_model)))
   write.csv(cv_glmnet_model_coefs, file = file.path(output_dir, "cv_glmnet_model_coefs.csv"), row.names = TRUE)
   
@@ -326,18 +319,18 @@ fit_propensity_model <- function(trainSet, testSet, seed = 1234, alpha_range = s
   W.hat_train <- predict(cv_glmnet_model, newx = X_matrix_train, type = "response", s = optimal_lambda)
   W.hat_test <- predict(cv_glmnet_model, newx = X_matrix_test, type = "response", s = optimal_lambda)
   
-  # Add propensity scores to datasets
+  # propensity scores to datasets
   trainSet_with_scores <- as.data.frame(cbind(trainSet, W.hat_train))
   colnames(trainSet_with_scores) <- c(colnames(trainSet), "W_hat")
   
   testSet_with_scores <- as.data.frame(cbind(testSet, W.hat_test))
   colnames(testSet_with_scores) <- c(colnames(testSet), "W_hat")
   
-  # Save datasets with scores
+  # datasets with scores
   write.csv(trainSet_with_scores, file.path(output_dir, "trainSet_with_scores.csv"), row.names = FALSE)
   write.csv(testSet_with_scores, file.path(output_dir, "testSet_with_scores.csv"), row.names = FALSE)
   
-  # Plot correlation matrix
+  # correlation matrix
   varscor_trainSet_with_scores_pearson <- corr.test(trainSet_with_scores, method = "pearson", adjust = "bonf", alpha = .05, ci = FALSE)
   varscor_trainSet_with_scores_pearson_p <- varscor_trainSet_with_scores_pearson$p
   
@@ -362,9 +355,6 @@ fit_propensity_model <- function(trainSet, testSet, seed = 1234, alpha_range = s
     
     dev.off()
     
-    
-    
-  # Filter datasets
   trainSet_with_scores_filtered <- subset(trainSet_with_scores, W_hat >= 0.05 & W_hat <= 0.95)
   testSet_with_scores_filtered <- subset(testSet_with_scores, W_hat >= 0.05 & W_hat <= 0.95)
   
@@ -380,11 +370,9 @@ fit_propensity_model <- function(trainSet, testSet, seed = 1234, alpha_range = s
   testSet_events <- testSet_with_scores_filtered$event
   W_hat_test_adj2 <- testSet_with_scores_filtered$W_hat
   
-  # Save filtered datasets
   write.csv(trainSet_with_scores_filtered, file.path(output_dir, "trainSet_with_scores_filtered.csv"), row.names = FALSE)
   write.csv(testSet_with_scores_filtered, file.path(output_dir, "testSet_with_scores_filtered.csv"), row.names = FALSE)
   
-  # Return results
   return(list(
     best_alpha = best_alpha,
     optimal_lambda = optimal_lambda,
@@ -406,10 +394,8 @@ fit_propensity_model <- function(trainSet, testSet, seed = 1234, alpha_range = s
   ))
 }
 
-# Call the function
 propensity_results <- fit_propensity_model(trainSet, testSet, output_dir = "propensity_score_output")
 
-# Access the results
 best_alpha <- propensity_results$best_alpha
 optimal_lambda <- propensity_results$optimal_lambda
 cv_glmnet_model <- propensity_results$cv_glmnet_model
@@ -428,7 +414,6 @@ testSet_times <- propensity_results$testSet_times
 testSet_events <- propensity_results$testSet_events
 W_hat_test_adj2 <- propensity_results$W_hat_test_adj2
 
-# Print some results
 print(paste("Best alpha:", best_alpha))
 print(paste("Optimal lambda:", optimal_lambda))
 print(paste("Original training set size:", nrow(trainSet_with_scores)))
@@ -437,10 +422,8 @@ print(paste("Original test set size:", nrow(testSet_with_scores)))
 print(paste("Filtered test set size:", nrow(testSet_with_scores_filtered)))
 
 
-
 ########
 # causal survival forests implementation
-
 
 implement_causal_forests <- function(trainSet_X, trainSet_W, trainSet_times, trainSet_events,
                                      testSet_X, testSet_W, testSet_times, testSet_events,
@@ -491,7 +474,6 @@ implement_causal_forests <- function(trainSet_X, trainSet_W, trainSet_times, tra
                                                ATE_estimate_train_SP = ate_train_SP[1], ATE_se_train_SP = ate_train_SP[2],
                                                ATE_estimate_test_SP = ate_h_SP_test, ATE_se_test_SP = ate_h_SP_test_sd))
     
-
     # RMST
     csf_model_RMST <- causal_survival_forest(X = trainSet_X, Y = trainSet_times, W = trainSet_W,
                                              D = trainSet_events, W.hat = as.vector(W_hat_train_adj2), 
@@ -524,11 +506,9 @@ implement_causal_forests <- function(trainSet_X, trainSet_W, trainSet_times, tra
                                                    ATE_estimate_test_RMST = ate_h_RMST_test, ATE_se_test_RMST = ate_h_RMST_test_sd))
   }
   
-  # Write results to CSV
   write.csv(results_SP, file.path(output_dir, "train_and_test_ATE_SP.csv"), row.names = FALSE)
   write.csv(results_RMST, file.path(output_dir, "train_and_test_ATE_RMST.csv"), row.names = FALSE)
   
-  # Create plots
   plot_SP <- ggplot(results_SP, aes(x = horizon_sel)) +
     geom_point(aes(y = ATE_estimate_train_SP, color = "Train"), size = 5, position = position_nudge(x = -0.2)) +
     geom_errorbar(aes(ymin = ATE_estimate_train_SP - 1.96 * ATE_se_train_SP, 
@@ -569,7 +549,7 @@ implement_causal_forests <- function(trainSet_X, trainSet_W, trainSet_times, tra
     ) +
     scale_color_manual(values = c("Train" = "blue", "Test" = "red"))
   
-  # Save high-resolution plots
+  # high-resolution plots
   ggsave(file.path(output_dir, "ATE_SP_plot.png"), plot_SP, width = 12, height = 8, dpi = 600, units = "in")
   ggsave(file.path(output_dir, "ATE_RMST_plot.png"), plot_RMST, width = 12, height = 8, dpi = 600, units = "in")
   
@@ -577,7 +557,6 @@ implement_causal_forests <- function(trainSet_X, trainSet_W, trainSet_times, tra
   return(list(results_SP = results_SP, results_RMST = results_RMST))
 }
 
-# Call the function
 CSF_results <- implement_causal_forests(
   trainSet_X, trainSet_W, trainSet_times, trainSet_events,
   testSet_X, testSet_W, testSet_times, testSet_events,
@@ -585,17 +564,11 @@ CSF_results <- implement_causal_forests(
   output_dir = "causal_forest_results"
 )
 
-# Print results
 print(CSF_results$results_SP)
 print(CSF_results$results_RMST)
 
-
-#######
-
-
 #########
 # dummy outcome test
-
 
 perform_dummy_outcome_tests <- function(trainSet_X, trainSet_W, trainSet_times, trainSet_events, 
                                         W_hat_train_adj2,  
@@ -653,15 +626,13 @@ perform_dummy_outcome_tests <- function(trainSet_X, trainSet_W, trainSet_times, 
     return(dummy_results)
   }
   
-  # Perform tests for both targets
+  # tests for both targets
   dummy_results_SP <- perform_dummy_test("survival.probability")
   dummy_results_RMST <- perform_dummy_test("RMST")
   
-  # Save results to CSV
   write.csv(dummy_results_SP, file.path(output_dir, "Dummy_Outcome_SP_Results.csv"), row.names = FALSE)
   write.csv(dummy_results_RMST, file.path(output_dir, "Dummy_Outcome_RMST_Results.csv"), row.names = FALSE)
   
-  # Create and save boxplots
   create_boxplot <- function(data, y_label, filename) {
     data$Horizon <- as.factor(data$Horizon)
     p <- ggplot(data, aes(x = Horizon, y = CATE_Estimate, fill = Horizon)) +
@@ -685,9 +656,6 @@ perform_dummy_outcome_tests <- function(trainSet_X, trainSet_W, trainSet_times, 
   return(list(SP_results = dummy_results_SP, RMST_results = dummy_results_RMST))
 }
 
-
-
-# Call the function
 dummy_results <- perform_dummy_outcome_tests(
   trainSet_X = trainSet_X,
   trainSet_W = trainSet_W,
@@ -697,12 +665,9 @@ dummy_results <- perform_dummy_outcome_tests(
   output_dir = "dummy_outcome_results"
 )
 
-# Access the results if needed
 sp_results <- dummy_results$SP_results
 rmst_results <- dummy_results$RMST_results
 
-# Print summary of results
 print(summary(sp_results$CATE_Estimate))
 print(summary(rmst_results$CATE_Estimate))
-
 
