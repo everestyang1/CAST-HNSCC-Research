@@ -13,11 +13,12 @@ library(grf)
 library(devEMF)
 library(matrixStats)
 library(vioplot)
-library(fastshap)
 library(MASS)
 library(corrplot)
 library(GGally)
 library(dplyr)
+library(reshape2)
+library(fastshap)
 
 plot_effects_distribution <- function(results, method, horizon) {
     effects_df <- data.frame(effects = results$predictions)
@@ -60,11 +61,120 @@ plot_treatment_effects_by_covariate <- function(predictions, X, var_name,
     return(p)
 }
 
+calculate_and_plot_shap <- function(csf_model, X_matrix, output_dir = ".", 
+                                  target_type = "SP", horizon = NULL) {
+  dir.create(output_dir, showWarnings = FALSE)
+
+  X_matrix <- as.matrix(X_matrix)
+  n_samples <- nrow(X_matrix)
+  n_features <- ncol(X_matrix)
+  feature_names <- colnames(X_matrix)
+  
+  # Simpler prediction wrapper
+  pred_wrapper <- function(object, newdata) {
+    preds <- predict(object, newdata)$predictions
+    matrix(preds, ncol = 1)
+  }
+
+  # Get SHAP values
+  shap_values <- fastshap::explain(
+    object = csf_model,
+    X = X_matrix,
+    nsim = 500,
+    pred_wrapper = pred_wrapper,
+    exact = FALSE,
+    newdata = X_matrix
+  )
+
+  # Explicitly create matrix
+  shap_matrix <- matrix(0, nrow = n_samples, ncol = n_features)
+  for(i in 1:n_features) {
+    shap_matrix[,i] <- shap_values
+  }
+  colnames(shap_matrix) <- feature_names
+  
+  # Convert to data frame for plotting
+  shap_long <- reshape2::melt(shap_matrix)
+  colnames(shap_long) <- c("observation", "feature", "shap_value")
+  
+  feature_importance <- data.frame(
+    feature = feature_names,
+    importance = colMeans(abs(shap_matrix))
+  )
+  feature_importance <- feature_importance[order(feature_importance$importance, decreasing = TRUE), ]
+  
+  # Feature importance plot
+  p1 <- ggplot(feature_importance, aes(x = reorder(feature, importance), y = importance)) +
+    geom_bar(stat = "identity", fill = "lightblue") +
+    coord_flip() +
+    theme_bw() +
+    labs(
+      title = sprintf("Feature Importance (%s, Horizon=%d)", target_type, horizon),
+      x = "Feature",
+      y = "Mean |SHAP value|"
+    ) +
+    theme(
+      axis.text = element_text(face = "bold", size = 10),
+      axis.title = element_text(face = "bold", size = 12),
+      plot.title = element_text(face = "bold", size = 14)
+    )
+  
+  ggsave(
+    file.path(output_dir, sprintf("shap_importance_%s_h%d.png", target_type, horizon)),
+    p1,
+    width = 10,
+    height = 8,
+    dpi = 300
+  )
+  
+  # SHAP summary plot for top features
+  top_features <- head(feature_importance$feature, 10)
+  shap_top <- shap_long[shap_long$feature %in% top_features, ]
+  
+  # Original feature values for top features
+  feature_values <- X_matrix[, top_features]
+  feature_values_long <- reshape2::melt(feature_values)
+  
+  shap_top$feature_value <- feature_values_long$value
+  
+  p2 <- ggplot(shap_top, aes(x = feature_value, y = shap_value)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "loess", se = TRUE) +
+    facet_wrap(~feature, scales = "free_x") +
+    theme_bw() +
+    labs(
+      title = sprintf("SHAP Summary Plot (%s, Horizon=%d)", target_type, horizon),
+      x = "Feature Value",
+      y = "SHAP Value"
+    ) +
+    theme(
+      axis.text = element_text(face = "bold", size = 10),
+      axis.title = element_text(face = "bold", size = 12),
+      plot.title = element_text(face = "bold", size = 14),
+      strip.text = element_text(face = "bold", size = 10)
+    )
+  
+  ggsave(
+    file.path(output_dir, sprintf("shap_summary_%s_h%d.png", target_type, horizon)),
+    p2,
+    width = 12,
+    height = 10,
+    dpi = 300
+  )
+  
+  return(list(
+    shap_values = shap_matrix,
+    feature_importance = feature_importance,
+    plots = list(importance = p1, summary = p2)
+  ))
+}
+
+
 # data simulation function with simple treatment effect
 simulate_simple_data <- function(n_samples, true_effect, seed = 42) {
   set.seed(seed)
   
-  # Generate covariates with more realistic distributions
+  # covariates with more realistic distributions
   data <- data.frame(
     Age = rnorm(n_samples, mean = 60, sd = 10),
     Sex = rbinom(n_samples, 1, 0.5),
@@ -429,10 +539,11 @@ implement_causal_forests <- function(trainSet_X, trainSet_W, trainSet_times, tra
                                      testSet_X, testSet_W, testSet_times, testSet_events,
                                      W_hat_train_adj2, W_hat_test_adj2,
                                      n_trees_val = 3000, horizons = seq(10, 50, by=5),
-                                     output_dir = ".") {
+                                     output_dir = ".", calculate_shap = TRUE) {
   
-  # Ensure output directory exists
   dir.create(output_dir, showWarnings = FALSE)
+  shap_dir <- file.path(output_dir, "shap_results")
+  if(calculate_shap) dir.create(shap_dir, recursive = TRUE, showWarnings = FALSE)
   
   results_SP <- data.frame(horizon_sel = integer(), 
                            ATE_estimate_train_SP = numeric(), ATE_se_train_SP = numeric(),
@@ -444,15 +555,31 @@ implement_causal_forests <- function(trainSet_X, trainSet_W, trainSet_times, tra
   
   for (horizon in horizons) {
     # Survival Probability
+    print("Creating CSF model...")
     csf_model_SP <- causal_survival_forest(X = trainSet_X, Y = trainSet_times, W = trainSet_W,
                                            D = trainSet_events, W.hat = as.vector(W_hat_train_adj2), 
                                            num.trees = n_trees_val, target = "survival.probability", 
                                            horizon = horizon, honesty = TRUE,
                                            min.node.size = 5,
                                            alpha = 0.05,
-                                           imbalance.penalty = 0.1,  # Added imbalance penalty
-                                           stabilize.splits = TRUE,  # Added split stabilization
+                                           imbalance.penalty = 0.1,
+                                           stabilize.splits = TRUE,
                                            seed = 123)
+
+    print("=== Model Diagnostics ===")
+    print("Model structure:")
+    print(str(csf_model_SP))
+    print("\nTest predictions on first 5 samples:")
+    test_preds <- predict(csf_model_SP, trainSet_X[1:5,])
+    print(test_preds)
+    print("\nTraining data summary:")
+    print("Times range:")
+    print(range(trainSet_times))
+    print("Events distribution:")
+    print(table(trainSet_events))
+    print("Treatment distribution:")
+    print(table(trainSet_W))
+    print("Current horizon:", horizon)
     
     ate_train_SP <- average_treatment_effect(csf_model_SP)
     csf_pred_test_SP <- predict(csf_model_SP, testSet_X, W.hat = as.vector(W_hat_test_adj2), estimate.variance = TRUE)
@@ -467,6 +594,16 @@ implement_causal_forests <- function(trainSet_X, trainSet_W, trainSet_times, tra
         testSet_X, 
         var,
         title = paste("SP - Horizon", horizon)
+      )
+    }
+    
+    if(calculate_shap) {
+      shap_results_SP <- calculate_and_plot_shap(
+        csf_model_SP,
+        as.data.frame(trainSet_X),
+        output_dir = shap_dir,
+        target_type = "SP",
+        horizon = horizon
       )
     }
 
@@ -498,6 +635,16 @@ implement_causal_forests <- function(trainSet_X, trainSet_W, trainSet_times, tra
         testSet_X, 
         var,
         title = paste("RMST - Horizon", horizon)
+      )
+    }
+
+    if(calculate_shap) {
+      shap_results_RMST <- calculate_and_plot_shap(
+        csf_model_RMST,
+        as.data.frame(trainSet_X),
+        output_dir = shap_dir,
+        target_type = "RMST",
+        horizon = horizon
       )
     }
     
@@ -561,7 +708,8 @@ CSF_results <- implement_causal_forests(
   trainSet_X, trainSet_W, trainSet_times, trainSet_events,
   testSet_X, testSet_W, testSet_times, testSet_events,
   W_hat_train_adj2, W_hat_test_adj2,
-  output_dir = "causal_forest_results"
+  output_dir = "causal_forest_results",
+  calculate_shap = TRUE
 )
 
 print(CSF_results$results_SP)
