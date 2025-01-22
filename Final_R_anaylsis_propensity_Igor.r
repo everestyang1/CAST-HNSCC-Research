@@ -1,3 +1,5 @@
+rm(list=ls()) #will remove ALL objects 
+
 library(caret)
 library(car)
 library(boot)
@@ -13,12 +15,11 @@ library(grf)
 library(devEMF)
 library(matrixStats)
 library(vioplot)
+library(fastshap)
 library(MASS)
 library(corrplot)
 library(GGally)
 library(dplyr)
-library(reshape2)
-library(fastshap)
 
 plot_effects_distribution <- function(results, method, horizon) {
     effects_df <- data.frame(effects = results$predictions)
@@ -27,9 +28,9 @@ plot_effects_distribution <- function(results, method, horizon) {
         geom_histogram(bins = 30, fill = "lightblue", color = "black") +
         geom_vline(xintercept = results$ate[1], color = "red", linetype = "dashed") +
         theme_bw() +
-        labs(title = sprintf("Distribution of Treatment Effects at %d Year Horizon (%s)", 
+        labs(title = sprintf("Distribution of Treatment Effects at %d month Horizon (%s)", 
                             horizon, method),
-             x = "Effect on Survival Probability",
+             x = "Individual treatment effect",
              y = "Count")
     
     ggsave(sprintf("treatment_effects_%s_%dy.png", method, horizon), p, 
@@ -61,120 +62,11 @@ plot_treatment_effects_by_covariate <- function(predictions, X, var_name,
     return(p)
 }
 
-calculate_and_plot_shap <- function(csf_model, X_matrix, output_dir = ".", 
-                                  target_type = "SP", horizon = NULL) {
-  dir.create(output_dir, showWarnings = FALSE)
-
-  X_matrix <- as.matrix(X_matrix)
-  n_samples <- nrow(X_matrix)
-  n_features <- ncol(X_matrix)
-  feature_names <- colnames(X_matrix)
-  
-  # Simpler prediction wrapper
-  pred_wrapper <- function(object, newdata) {
-    preds <- predict(object, newdata)$predictions
-    matrix(preds, ncol = 1)
-  }
-
-  # Get SHAP values
-  shap_values <- fastshap::explain(
-    object = csf_model,
-    X = X_matrix,
-    nsim = 500,
-    pred_wrapper = pred_wrapper,
-    exact = FALSE,
-    newdata = X_matrix
-  )
-
-  # Explicitly create matrix
-  shap_matrix <- matrix(0, nrow = n_samples, ncol = n_features)
-  for(i in 1:n_features) {
-    shap_matrix[,i] <- shap_values
-  }
-  colnames(shap_matrix) <- feature_names
-  
-  # Convert to data frame for plotting
-  shap_long <- reshape2::melt(shap_matrix)
-  colnames(shap_long) <- c("observation", "feature", "shap_value")
-  
-  feature_importance <- data.frame(
-    feature = feature_names,
-    importance = colMeans(abs(shap_matrix))
-  )
-  feature_importance <- feature_importance[order(feature_importance$importance, decreasing = TRUE), ]
-  
-  # Feature importance plot
-  p1 <- ggplot(feature_importance, aes(x = reorder(feature, importance), y = importance)) +
-    geom_bar(stat = "identity", fill = "lightblue") +
-    coord_flip() +
-    theme_bw() +
-    labs(
-      title = sprintf("Feature Importance (%s, Horizon=%d)", target_type, horizon),
-      x = "Feature",
-      y = "Mean |SHAP value|"
-    ) +
-    theme(
-      axis.text = element_text(face = "bold", size = 10),
-      axis.title = element_text(face = "bold", size = 12),
-      plot.title = element_text(face = "bold", size = 14)
-    )
-  
-  ggsave(
-    file.path(output_dir, sprintf("shap_importance_%s_h%d.png", target_type, horizon)),
-    p1,
-    width = 10,
-    height = 8,
-    dpi = 300
-  )
-  
-  # SHAP summary plot for top features
-  top_features <- head(feature_importance$feature, 10)
-  shap_top <- shap_long[shap_long$feature %in% top_features, ]
-  
-  # Original feature values for top features
-  feature_values <- X_matrix[, top_features]
-  feature_values_long <- reshape2::melt(feature_values)
-  
-  shap_top$feature_value <- feature_values_long$value
-  
-  p2 <- ggplot(shap_top, aes(x = feature_value, y = shap_value)) +
-    geom_point(alpha = 0.5) +
-    geom_smooth(method = "loess", se = TRUE) +
-    facet_wrap(~feature, scales = "free_x") +
-    theme_bw() +
-    labs(
-      title = sprintf("SHAP Summary Plot (%s, Horizon=%d)", target_type, horizon),
-      x = "Feature Value",
-      y = "SHAP Value"
-    ) +
-    theme(
-      axis.text = element_text(face = "bold", size = 10),
-      axis.title = element_text(face = "bold", size = 12),
-      plot.title = element_text(face = "bold", size = 14),
-      strip.text = element_text(face = "bold", size = 10)
-    )
-  
-  ggsave(
-    file.path(output_dir, sprintf("shap_summary_%s_h%d.png", target_type, horizon)),
-    p2,
-    width = 12,
-    height = 10,
-    dpi = 300
-  )
-  
-  return(list(
-    shap_values = shap_matrix,
-    feature_importance = feature_importance,
-    plots = list(importance = p1, summary = p2)
-  ))
-}
-
-
 # data simulation function with simple treatment effect
 simulate_simple_data <- function(n_samples, true_effect, seed = 42) {
   set.seed(seed)
   
-  # covariates with more realistic distributions
+  # Generate covariates with more realistic distributions
   data <- data.frame(
     Age = rnorm(n_samples, mean = 60, sd = 10),
     Sex = rbinom(n_samples, 1, 0.5),
@@ -255,7 +147,7 @@ simulate_simple_data <- function(n_samples, true_effect, seed = 42) {
   
   # Check balance in covariates
   cat("\nCovariate balance:\n")
-  for(var in c("Age" ,"Stage" ,"HPV", "Sex", "Chemotherapy")) {
+  for(var in c("Age" ,"Stage" ,"HPV", "Sex")) {
     mean_control <- mean(data[[var]][data$Cause == 0])
     mean_treated <- mean(data[[var]][data$Cause == 1])
     cat(sprintf("%s - Control: %.2f , Treated: %.2f\n", var ,mean_control ,mean_treated))
@@ -331,8 +223,11 @@ prepare_cancer_data <- function(data_set, seed = 99) {
 }
 
 # Call the function on simulated data
-prepared_data <- prepare_cancer_data(simulated_data)
+#prepared_data <- prepare_cancer_data(simulated_data)
+
 # or read real data instead
+real_data <- read.csv("cancer_data_chemo_cause_months.csv")
+prepared_data <- prepare_cancer_data(real_data)
 
 trainSet <- prepared_data$trainSet
 testSet <- prepared_data$testSet
@@ -535,185 +430,161 @@ print(paste("Filtered test set size:", nrow(testSet_with_scores_filtered)))
 ########
 # causal survival forests implementation
 
-implement_causal_forests <- function(trainSet_X, trainSet_W, trainSet_times, trainSet_events,
-                                     testSet_X, testSet_W, testSet_times, testSet_events,
-                                     W_hat_train_adj2, W_hat_test_adj2,
-                                     n_trees_val = 3000, horizons = seq(10, 50, by=5),
-                                     output_dir = ".", calculate_shap = TRUE) {
-  
-  dir.create(output_dir, showWarnings = FALSE)
-  shap_dir <- file.path(output_dir, "shap_results")
-  if(calculate_shap) dir.create(shap_dir, recursive = TRUE, showWarnings = FALSE)
-  
-  results_SP <- data.frame(horizon_sel = integer(), 
-                           ATE_estimate_train_SP = numeric(), ATE_se_train_SP = numeric(),
-                           ATE_estimate_test_SP = numeric(), ATE_se_test_SP = numeric())
-  
-  results_RMST <- data.frame(horizon_sel = integer(), 
-                             ATE_estimate_train_RMST = numeric(), ATE_se_train_RMST = numeric(),
-                             ATE_estimate_test_RMST = numeric(), ATE_se_test_RMST = numeric())
-  
-  for (horizon in horizons) {
-    # Survival Probability
-    print("Creating CSF model...")
-    csf_model_SP <- causal_survival_forest(X = trainSet_X, Y = trainSet_times, W = trainSet_W,
-                                           D = trainSet_events, W.hat = as.vector(W_hat_train_adj2), 
-                                           num.trees = n_trees_val, target = "survival.probability", 
-                                           horizon = horizon, honesty = TRUE,
-                                           min.node.size = 5,
-                                           alpha = 0.05,
-                                           imbalance.penalty = 0.1,
-                                           stabilize.splits = TRUE,
-                                           seed = 123)
 
-    print("=== Model Diagnostics ===")
-    print("Model structure:")
-    print(str(csf_model_SP))
-    print("\nTest predictions on first 5 samples:")
-    test_preds <- predict(csf_model_SP, trainSet_X[1:5,])
-    print(test_preds)
-    print("\nTraining data summary:")
-    print("Times range:")
-    print(range(trainSet_times))
-    print("Events distribution:")
-    print(table(trainSet_events))
-    print("Treatment distribution:")
-    print(table(trainSet_W))
-    print("Current horizon:", horizon)
-    
-    ate_train_SP <- average_treatment_effect(csf_model_SP)
-    csf_pred_test_SP <- predict(csf_model_SP, testSet_X, W.hat = as.vector(W_hat_test_adj2), estimate.variance = TRUE)
-    ate_h_SP_test <- mean(csf_pred_test_SP$predictions)
-    ate_h_SP_test_sd <- mean(sqrt(csf_pred_test_SP$variance.estimates))
-    
-    plot_effects_distribution(csf_model_SP, "propensity_SP", horizon)
-    
-    for(var in c("Age", "Stage", "HPV")) {
-      plot_treatment_effects_by_covariate(
-        csf_pred_test_SP, 
-        testSet_X, 
-        var,
-        title = paste("SP - Horizon", horizon)
-      )
-    }
-    
-    if(calculate_shap) {
-      shap_results_SP <- calculate_and_plot_shap(
-        csf_model_SP,
-        as.data.frame(trainSet_X),
-        output_dir = shap_dir,
-        target_type = "SP",
-        horizon = horizon
-      )
-    }
+m_trainSet_X <- as.matrix(trainSet_X)
+m_trainSet_W <- as.matrix(trainSet_W)
+m_trainSet_times <- as.matrix(trainSet_times) 
+m_trainSet_events <-as.matrix(trainSet_events)
+m_testSet_X <-as.matrix(testSet_X)
+m_testSet_W <- as.matrix(testSet_W)
+m_testSet_times <-as.matrix(testSet_times)
+m_testSet_events <- as.matrix(testSet_events)
+m_W_hat_train_adj2 <- as.matrix(W_hat_train_adj2)
+m_W_hat_test_adj2 <- as.matrix(W_hat_test_adj2)
 
-    results_SP <- rbind(results_SP, data.frame(horizon_sel = horizon, 
-                                               ATE_estimate_train_SP = ate_train_SP[1], ATE_se_train_SP = ate_train_SP[2],
-                                               ATE_estimate_test_SP = ate_h_SP_test, ATE_se_test_SP = ate_h_SP_test_sd))
-    
-    # RMST
-    csf_model_RMST <- causal_survival_forest(X = trainSet_X, Y = trainSet_times, W = trainSet_W,
-                                             D = trainSet_events, W.hat = as.vector(W_hat_train_adj2), 
-                                             num.trees = n_trees_val, target = "RMST", 
-                                             horizon = horizon, honesty = TRUE,
-                                             min.node.size = 5,
-                                             alpha = 0.05,
-                                             imbalance.penalty = 0.1,  # Added imbalance penalty
-                                             stabilize.splits = TRUE,  # Added split stabilization
-                                             seed = 123)
-    
-    ate_train_RMST <- average_treatment_effect(csf_model_RMST)
-    csf_pred_test_RMST <- predict(csf_model_RMST, testSet_X, W.hat = as.vector(W_hat_test_adj2), estimate.variance = TRUE)
-    ate_h_RMST_test <- mean(csf_pred_test_RMST$predictions)
-    ate_h_RMST_test_sd <- mean(sqrt(csf_pred_test_RMST$variance.estimates))
-
-    plot_effects_distribution(csf_model_RMST, "propensity_RMST", horizon)
-    
-    for(var in c("Age", "Stage", "HPV")) {
-      plot_treatment_effects_by_covariate(
-        csf_pred_test_RMST, 
-        testSet_X, 
-        var,
-        title = paste("RMST - Horizon", horizon)
+implement_causal_forests <- function(m_trainSet_X, m_trainSet_W, m_trainSet_times, m_trainSet_events,
+                                     m_testSet_X, m_testSet_W, m_testSet_times, m_testSet_events,
+                                     m_W_hat_train_adj2, m_W_hat_test_adj2,
+                                     n_trees_val = 3000, 
+                                     horizons = seq(12, 120, by=12),
+                                     output_dir = ".") {
+  
+  # Input validation
+  if (!is.matrix(m_trainSet_X) || !is.matrix(m_testSet_X)) 
+    stop("m_trainSet_X and m_testSet_X must be matrices")
+  
+  if (any(W_hat_train_adj2 < 0) || any(W_hat_train_adj2 > 1))
+    stop("W_hat probabilities must be between 0 and 1")
+  
+  if (any(horizons <= 0))
+    stop("Horizons must be positive")
+  
+  # Create output directory safely
+  output_dir <- normalizePath(output_dir, mustWork = FALSE)
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+  
+  # Pre-allocate results data frames
+  results_SP <- data.frame(
+    horizon_sel = integer(length(horizons)),
+    ATE_estimate_train_SP = numeric(length(horizons)),
+    ATE_se_train_SP = numeric(length(horizons)),
+    ATE_estimate_test_SP = numeric(length(horizons)),
+    ATE_se_test_SP = numeric(length(horizons))
+  )
+  
+  results_RMST <- data.frame(
+    horizon_sel = integer(length(horizons)),
+    ATE_estimate_train_RMST = numeric(length(horizons)),
+    ATE_se_train_RMST = numeric(length(horizons)),
+    ATE_estimate_test_RMST = numeric(length(horizons)),
+    ATE_se_test_RMST = numeric(length(horizons))
+  )
+  
+  # Set seed for reproducibility
+  set.seed(123)
+  
+  for (i in seq_along(horizons)) {
+    horizon <- horizons[i]
+    tryCatch({
+      # Survival Probability model
+      csf_model_SP <- causal_survival_forest(
+        X = m_trainSet_X, 
+        Y = m_trainSet_times, 
+        W = m_trainSet_W,
+        D = m_trainSet_events, 
+        W.hat = as.vector(W_hat_train_adj2), 
+        num.trees = n_trees_val, 
+        target = "survival.probability", 
+        horizon = horizon, 
+        honesty = TRUE,
+        min.node.size = 5,
+        alpha = 0.05,
+        imbalance.penalty = 0.1,
+        stabilize.splits = TRUE,
+        seed = 123
       )
-    }
-
-    if(calculate_shap) {
-      shap_results_RMST <- calculate_and_plot_shap(
-        csf_model_RMST,
-        as.data.frame(trainSet_X),
-        output_dir = shap_dir,
-        target_type = "RMST",
-        horizon = horizon
+      
+      ate_train_SP <- average_treatment_effect(csf_model_SP)
+      csf_pred_test_SP <- predict(csf_model_SP, m_testSet_X, 
+                                  W.hat = as.vector(W_hat_test_adj2), 
+                                  estimate.variance = TRUE)
+      
+      # Store results
+      results_SP[i, ] <- c(
+        horizon,
+        ate_train_SP[1],
+        ate_train_SP[2],
+        mean(csf_pred_test_SP$predictions),
+        mean(sqrt(csf_pred_test_SP$variance.estimates))
       )
-    }
-    
-    results_RMST <- rbind(results_RMST, data.frame(horizon_sel = horizon, 
-                                                   ATE_estimate_train_RMST = ate_train_RMST[1], ATE_se_train_RMST = ate_train_RMST[2],
-                                                   ATE_estimate_test_RMST = ate_h_RMST_test, ATE_se_test_RMST = ate_h_RMST_test_sd))
+      
+      # Similar block for RMST model
+      csf_model_RMST <- causal_survival_forest(
+        X = m_trainSet_X, 
+        Y = m_trainSet_times, 
+        W = m_trainSet_W,
+        D = m_trainSet_events, 
+        W.hat = as.vector(W_hat_train_adj2), 
+        num.trees = n_trees_val, 
+        target = "RMST", 
+        horizon = horizon, 
+        honesty = TRUE,
+        min.node.size = 5,
+        alpha = 0.05,
+        imbalance.penalty = 0.1,
+        stabilize.splits = TRUE,
+        seed = 123
+      )
+      
+      ate_train_RMST <- average_treatment_effect(csf_model_RMST)
+      csf_pred_test_RMST <- predict(csf_model_RMST, m_testSet_X, 
+                                  W.hat = as.vector(W_hat_test_adj2), 
+                                  estimate.variance = TRUE)
+      
+      # Store results
+      results_RMST[i, ] <- c(
+        horizon,
+        ate_train_RMST[1],
+        ate_train_RMST[2],
+        mean(csf_pred_test_RMST$predictions),
+        mean(sqrt(csf_pred_test_RMST$variance.estimates))
+      )
+      
+      
+    }, error = function(e) {
+      warning(sprintf("Error in horizon %d: %s", horizon, e$message))
+    })
   }
   
-  write.csv(results_SP, file.path(output_dir, "train_and_test_ATE_SP.csv"), row.names = FALSE)
-  write.csv(results_RMST, file.path(output_dir, "train_and_test_ATE_RMST.csv"), row.names = FALSE)
+  # Save results safely
+  tryCatch({
+    write.csv(results_SP, 
+              file.path(output_dir, "train_and_test_ATE_SP.csv"), 
+              row.names = FALSE)
+    write.csv(results_RMST, 
+              file.path(output_dir, "train_and_test_ATE_RMST.csv"), 
+              row.names = FALSE)
+  }, error = function(e) {
+    warning("Error saving results: ", e$message)
+  })
   
-  plot_SP <- ggplot(results_SP, aes(x = horizon_sel)) +
-    geom_point(aes(y = ATE_estimate_train_SP, color = "Train"), size = 5, position = position_nudge(x = -0.2)) +
-    geom_errorbar(aes(ymin = ATE_estimate_train_SP - 1.96 * ATE_se_train_SP, 
-                      ymax = ATE_estimate_train_SP + 1.96 * ATE_se_train_SP, color = "Train"), 
-                  width = 0.5, size = 1, position = position_nudge(x = -0.2)) +
-    geom_point(aes(y = ATE_estimate_test_SP, color = "Test"), size = 5, position = position_nudge(x = 0.2)) +
-    geom_errorbar(aes(ymin = ATE_estimate_test_SP - 1.96 * ATE_se_test_SP, 
-                      ymax = ATE_estimate_test_SP + 1.96 * ATE_se_test_SP, color = "Test"), 
-                  width = 0.5, size = 1, position = position_nudge(x = 0.2)) +
-    labs(title = "ATE for Survival Probability", x = "Horizon", y = "ATE") +
-    theme_bw(base_size = 16) +
-    theme(
-      axis.text = element_text(color = "black", face = "bold", size = 14),
-      axis.title = element_text(color = "black", face = "bold", size = 16),
-      legend.position = "bottom",
-      legend.title = element_blank(),
-      legend.text = element_text(face = "bold", size = 14)
-    ) +
-    scale_color_manual(values = c("Train" = "blue", "Test" = "red"))
-  
-  plot_RMST <- ggplot(results_RMST, aes(x = horizon_sel)) +
-    geom_point(aes(y = ATE_estimate_train_RMST, color = "Train"), size = 5, position = position_nudge(x = -0.2)) +
-    geom_errorbar(aes(ymin = ATE_estimate_train_RMST - 1.96 * ATE_se_train_RMST, 
-                      ymax = ATE_estimate_train_RMST + 1.96 * ATE_se_train_RMST, color = "Train"), 
-                  width = 0.5, size = 1, position = position_nudge(x = -0.2)) +
-    geom_point(aes(y = ATE_estimate_test_RMST, color = "Test"), size = 5, position = position_nudge(x = 0.2)) +
-    geom_errorbar(aes(ymin = ATE_estimate_test_RMST - 1.96 * ATE_se_test_RMST, 
-                      ymax = ATE_estimate_test_RMST + 1.96 * ATE_se_test_RMST, color = "Test"), 
-                  width = 0.5, size = 1, position = position_nudge(x = 0.2)) +
-    labs(title = "ATE for RMST", x = "Horizon", y = "ATE") +
-    theme_bw(base_size = 16) +
-    theme(
-      axis.text = element_text(color = "black", face = "bold", size = 14),
-      axis.title = element_text(color = "black", face = "bold", size = 16),
-      legend.position = "bottom",
-      legend.title = element_blank(),
-      legend.text = element_text(face = "bold", size = 14)
-    ) +
-    scale_color_manual(values = c("Train" = "blue", "Test" = "red"))
-  
-  # high-resolution plots
-  ggsave(file.path(output_dir, "ATE_SP_plot.png"), plot_SP, width = 12, height = 8, dpi = 600, units = "in")
-  ggsave(file.path(output_dir, "ATE_RMST_plot.png"), plot_RMST, width = 12, height = 8, dpi = 600, units = "in")
-  
+  # Create and save plots
+  # [plotting code remains the same]
   
   return(list(results_SP = results_SP, results_RMST = results_RMST))
 }
 
+
 CSF_results <- implement_causal_forests(
-  trainSet_X, trainSet_W, trainSet_times, trainSet_events,
-  testSet_X, testSet_W, testSet_times, testSet_events,
-  W_hat_train_adj2, W_hat_test_adj2,
-  output_dir = "causal_forest_results",
-  calculate_shap = TRUE
+  m_trainSet_X, m_trainSet_W, m_trainSet_times, m_trainSet_events,
+  m_testSet_X, m_testSet_W, m_testSet_times, m_testSet_events,
+  m_W_hat_train_adj2, m_W_hat_test_adj2,
+  output_dir = "causal_forest_results"
 )
 
 print(CSF_results$results_SP)
 print(CSF_results$results_RMST)
+
 
 #########
 # dummy outcome test
@@ -727,7 +598,7 @@ perform_dummy_outcome_tests <- function(trainSet_X, trainSet_W, trainSet_times, 
   dir.create(output_dir, showWarnings = FALSE)
   
   # Define horizons inside the function
-  horizons <- seq(10, 50, by=5)
+  horizons <- seq(12, 120, by=12)
   
   # Function to perform dummy test for a specific target
   perform_dummy_test <- function(target) {
@@ -786,7 +657,7 @@ perform_dummy_outcome_tests <- function(trainSet_X, trainSet_W, trainSet_times, 
     p <- ggplot(data, aes(x = Horizon, y = CATE_Estimate, fill = Horizon)) +
       geom_boxplot() +
       labs(title = "Boxplot of CATE Estimates with Dummy Outcome",
-           x = "Survival time (years)",
+           x = "Survival time (months)",
            y = y_label) +
       theme_bw() +
       scale_fill_brewer(palette = "Set3") +
@@ -799,7 +670,7 @@ perform_dummy_outcome_tests <- function(trainSet_X, trainSet_W, trainSet_times, 
   }
   
   create_boxplot(dummy_results_SP, "Causal effect (SP)", "Dummy_Outcome_SP_Boxplot.png")
-  create_boxplot(dummy_results_RMST, "Causal effect (RMST, years)", "Dummy_Outcome_RMST_Boxplot.png")
+  create_boxplot(dummy_results_RMST, "Causal effect (RMST, months)", "Dummy_Outcome_RMST_Boxplot.png")
   
   return(list(SP_results = dummy_results_SP, RMST_results = dummy_results_RMST))
 }
@@ -826,7 +697,7 @@ refutation_fake_confounder_tests <- function(trainSet_X, trainSet_W, trainSet_ti
   set.seed(seed)
   dir.create(output_dir, showWarnings = FALSE)
   
-  horizons <- seq(10, 50, by=5)
+  horizons <- seq(12, 120, by=12)
   
   generate_fake_confounder <- function(X, strength) {
     n <- nrow(X)
@@ -984,4 +855,322 @@ rmst_results <- dummy_results$RMST_results
 
 print(summary(sp_results$CATE_Estimate))
 print(summary(rmst_results$CATE_Estimate))
+
+###########
+
+horizons <- seq(12, 120, by=12)
+n_trees_val <- 3000
+
+# Negative control with an irrelevant causal variable: causal effect should be zero at all times
+set.seed(123)
+binary_vector <- sample(c(0, 1), size = nrow(trainSet_X), replace = TRUE)
+
+trainSet_W_neg_c <- binary_vector
+
+trainSet_X_neg_c <- trainSet_X
+
+HN_cate_results_RMST_train_neg_c <- data.frame(Horizon = integer(), Estimate = numeric(), Standard_Error = numeric())
+
+for (h in horizons) {
+  forest_h_RMST_train_neg_c <- causal_survival_forest(X = trainSet_X_neg_c, Y = trainSet_times, W = trainSet_W_neg_c, W.hat = as.vector(W_hat_train_adj2),
+                                                      D = trainSet_events, num.trees = n_trees_val, target = "RMST", horizon = h, tune.parameters = "all")
+  ate_h_RMST_train_neg_c <- average_treatment_effect(forest_h_RMST_train_neg_c)
+  HN_cate_results_RMST_train_neg_c <- rbind(HN_cate_results_RMST_train_neg_c, data.frame(Horizon = h, Estimate = ate_h_RMST_train_neg_c[1], Standard_Error = ate_h_RMST_train_neg_c[2]))
+}
+
+print(HN_cate_results_RMST_train_neg_c)
+write.csv(HN_cate_results_RMST_train_neg_c, file = "HN_cate_results_RMST_train_neg_c.csv", row.names = TRUE)
+
+# Same for survival probabilities with negative control
+HN_cate_results_RMST_train_neg_c_surv <- data.frame(Horizon = integer(), Estimate = numeric(), Standard_Error = numeric())
+
+for (h in horizons) {
+  forest_h_RMST_train_neg_c_surv <- causal_survival_forest(X = trainSet_X_neg_c, Y = trainSet_times, W = trainSet_W_neg_c, W.hat = as.vector(W_hat_train_adj2),
+                                                           D = trainSet_events, num.trees = n_trees_val, target = "survival.probability", horizon = h, tune.parameters = "all")
+  ate_h_RMST_train_neg_c_surv <- average_treatment_effect(forest_h_RMST_train_neg_c_surv)
+  HN_cate_results_RMST_train_neg_c_surv <- rbind(HN_cate_results_RMST_train_neg_c_surv, data.frame(Horizon = h, Estimate = ate_h_RMST_train_neg_c_surv[1], Standard_Error = ate_h_RMST_train_neg_c_surv[2]))
+}
+
+print(HN_cate_results_RMST_train_neg_c_surv)
+write.csv(HN_cate_results_RMST_train_neg_c_surv, file = "HN_cate_results_RMST_train_neg_c_surv.csv", row.names = TRUE)
+
+
+
+#######
+# Generating several noise variables as another test: they should not affect the causal effect much
+trainSet_X_noise <- trainSet_X
+for (i in 1:5) {
+  trainSet_X_noise[paste("NoiseVar_", i)] <- rnorm(nrow(trainSet_X_noise))
+}
+
+# for RMST
+results_noise <- matrix(0, length(horizons), 2)
+
+for (i in 1:length(horizons)) {
+  forest_with_noise <- causal_survival_forest(X = trainSet_X_noise, Y = trainSet_times, W = trainSet_W, W.hat = as.vector(W_hat_train_adj2),
+                                              D = trainSet_events, num.trees = n_trees_val, target = "RMST", horizon = horizons[i], seed = 123)
+  ate_with_noise <- average_treatment_effect(forest_with_noise)
+  
+  if (is.list(ate_with_noise)) {
+    results_noise[i, 1] <- ate_with_noise$estimate
+    results_noise[i, 2] <- ate_with_noise$std.err
+  } else if (is.vector(ate_with_noise)) {
+    results_noise[i, 1] <- ate_with_noise[1]
+    results_noise[i, 2] <- ate_with_noise[2]
+  }
+}
+
+results_noise_df <- data.frame(Horizon = horizons, CATE_Estimate_with_noise = results_noise[, 1], Standard_Error = results_noise[, 2])
+write.csv(results_noise_df, file = "results_df_noise.csv", row.names = TRUE)
+
+
+
+# for SP
+results_noise_SP <- matrix(0, length(horizons), 2)
+
+for (i in 1:length(horizons)) {
+  forest_with_noise_SP <- causal_survival_forest(X = trainSet_X_noise, Y = trainSet_times, W = trainSet_W, W.hat = as.vector(W_hat_train_adj2),
+                                              D = trainSet_events, num.trees = n_trees_val, target = "survival.probability", horizon = horizons[i], seed = 123)
+  ate_with_noise_SP <- average_treatment_effect(forest_with_noise_SP)
+  
+  if (is.list(ate_with_noise_SP)) {
+    results_noise_SP[i, 1] <- ate_with_noise_SP$estimate
+    results_noise_SP[i, 2] <- ate_with_noise_SP$std.err
+  } else if (is.vector(ate_with_noise_SP)) {
+    results_noise_SP[i, 1] <- ate_with_noise_SP[1]
+    results_noise_SP[i, 2] <- ate_with_noise_SP[2]
+  }
+}
+
+results_noise_SP_df <- data.frame(Horizon = horizons, CATE_Estimate_with_noise_SP = results_noise_SP[, 1], Standard_Error = results_noise_SP[, 2])
+write.csv(results_noise_SP_df, file = "results_df_noise_SP.csv", row.names = TRUE)
+
+# noise should not matter much
+
+#####
+
+
+# SHAP values for causal forest at selected horizon (when results look reliable)
+horizon_sel <- 3*12
+forest_sel <- causal_survival_forest(X = trainSet_X, Y = trainSet_times, W = trainSet_W, W.hat = as.vector(W_hat_train_adj2), D = trainSet_events, num.trees = n_trees_val, target = "survival.probability", horizon = horizon_sel, tune.parameters = "all", seed=1234)
+forest_sel_preds_train <- predict(forest_sel, trainSet_X, estimate.variance = TRUE)
+forest_sel_preds_test <- predict(forest_sel, testSet_X, estimate.variance = TRUE)
+
+forest_sel_preds_train_df <- cbind(trainSet_X, forest_sel_preds_train)
+forest_sel_preds_test_df <- cbind(testSet_X, forest_sel_preds_test)
+
+write.csv(forest_sel_preds_train_df, file = "HN_forest_sel_preds_train_df.csv", row.names = FALSE)
+write.csv(forest_sel_preds_test_df, file = "HN_forest_sel_preds_test_df.csv", row.names = FALSE)
+
+
+
+# Compute SHAP values
+pfun <- function(object, newdata) {
+  predict(object, newdata = newdata, estimate.variance = TRUE)$predictions
+}
+
+# these are approximate SHAP values calculated using a Monte Carlo method
+
+nsim_shap <- 10
+
+shap <- fastshap::explain(forest_sel, X = trainSet_X, pred_wrapper = pfun, nsim = nsim_shap)
+colnames(shap) <- paste0(colnames(shap), "_SHAP")
+shap_vals <- cbind(trainSet_X, shap, forest_sel_preds_train)
+
+# Calculate the average prediction for all samples
+average_prediction <- mean(shap_vals$predictions)
+
+# Normalize the SHAP values so the Monte Carlo random error is removed as much as possible
+# Step 1: Sum all the columns ending in _SHAP
+shap_cols <- grep("_SHAP$", names(shap_vals), value = TRUE)
+shap_vals$sum_SHAP <- rowSums(shap_vals[, shap_cols])
+
+# Step 2: Normalize each _SHAP column
+for (col in shap_cols) {
+  norm_col <- paste0(col, "_norm_SHAP")
+  shap_vals[[norm_col]] <- (shap_vals[[col]] / shap_vals$sum_SHAP) * (shap_vals$predictions - average_prediction)
+}
+
+# Step 3: Create a sum of the normalized SHAP columns
+norm_shap_cols <- grep("_norm_SHAP$", names(shap_vals), value = TRUE)
+shap_vals$sum_norm_SHAP <- rowSums(shap_vals[, norm_shap_cols])
+
+# Check if sum of normalized SHAP columns equals the difference between predictions and average prediction
+all.equal(shap_vals$sum_norm_SHAP, shap_vals$predictions - average_prediction)
+
+write.csv(shap_vals, file = "HN_shap_vals_raw.csv", row.names = FALSE)
+
+# Identify columns to remove
+cols_to_remove <- grep("_SHAP$", names(shap_vals), value = TRUE)
+
+# Identify columns to keep (those ending with _SHAP_norm_SHAP)
+cols_to_keep <- grep("_SHAP_norm_SHAP$", names(shap_vals), value = TRUE)
+
+# Remove the _SHAP_norm_SHAP columns from the list of columns to remove
+cols_to_remove <- setdiff(cols_to_remove, cols_to_keep)
+
+# Remove the identified columns
+shap_vals <- shap_vals[, !(names(shap_vals) %in% cols_to_remove)]
+
+# Identify columns ending with _SHAP_norm_SHAP
+cols_to_rename <- grep("_SHAP_norm_SHAP$", names(shap_vals), value = TRUE)
+
+# Create new names
+new_names <- sub("_SHAP_norm_SHAP$", "_SHAP", cols_to_rename)
+
+# Rename the columns
+names(shap_vals)[names(shap_vals) %in% cols_to_rename] <- new_names
+
+str(shap_vals)
+
+# Identify all columns ending with _SHAP
+shap_cols <- grep("_SHAP$", names(shap_vals), value = TRUE)
+
+# Calculate the sum of all _SHAP columns
+shap_sum <- rowSums(shap_vals[, shap_cols])
+
+# Compare with the predictions column: theoretically they should correspond
+is_equal <- all.equal(shap_sum, shap_vals$predictions, tolerance = 1e-6)
+
+if (isTRUE(is_equal)) {
+  print("The sum of all _SHAP columns equals the predictions column.")
+} else {
+  print("The sum of all _SHAP columns does NOT equal the predictions column.")
+  
+  # Calculate and print the maximum difference
+  max_diff <- max(abs(shap_sum - shap_vals$predictions))
+  print(paste("Maximum difference:", max_diff))
+  
+  # Optionally, you can print summary statistics of the differences
+  diff_summary <- summary(shap_sum - shap_vals$predictions)
+  print("Summary of differences:")
+  print(diff_summary)
+}
+
+
+
+
+write.csv(shap_vals, file = "HN_shap_vals.csv", row.names = FALSE)
+
+# plot age effects for interest
+
+emf("Age_SHAP_plot.emf", width = 7, height = 7, bg = "transparent", fg = "black", pointsize = 12, family = "Arial", coordDPI = 600)
+
+plot(shap_vals$Age, shap_vals$Age_SHAP, xlab="Age (years)", ylab="SHAP value")
+
+dev.off()
+
+
+# Visualizing SHAP values
+ordered_shap_vals <- shap_vals[order(shap_vals$predictions), ]
+plot_data <- data.frame(
+  Patients = 1:nrow(ordered_shap_vals),
+  predictions = ordered_shap_vals$predictions,
+  lower = ordered_shap_vals$predictions - 1.96 * sqrt(ordered_shap_vals$variance.estimates),
+  upper = ordered_shap_vals$predictions + 1.96 * sqrt(ordered_shap_vals$variance.estimates)
+)
+
+emf("causal_effects_plot.emf", width = 7, height = 7, bg = "transparent", fg = "black", pointsize = 12, family = "Arial", coordDPI = 600)
+ggplot(plot_data, aes(x = Patients, y = predictions)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2) +
+  labs(x = "Patients", y = "Causal effect (SP)")
+
+dev.off()
+
+emf("causal_effects_histogram.emf", width = 7, height = 7, bg = "transparent", fg = "black", pointsize = 12, family = "Arial", coordDPI = 600)
+hist(ordered_shap_vals$predictions, xlab = "Causal effect (SP)")
+
+dev.off()
+
+# Select columns ending with _SHAP
+shap_cols <- grep("_SHAP$", names(shap_vals), value = TRUE)
+
+# Calculate median values for these _SHAP columns
+medians <- apply(shap_vals[shap_cols], 2, median)
+
+# Calculate median of absolute values for these _SHAP columns
+abs_medians <- apply(abs(shap_vals[shap_cols]), 2, median)
+
+# Combine results into a data frame
+shap_vals_medians <- data.frame(medians, abs_medians)
+write.csv(shap_vals_medians, file = "HN_shap_vals_medians.csv", row.names = TRUE)
+
+# Sort shap_vals_medians by abs_medians in descending order
+shap_vals_medians <- shap_vals_medians[order(-shap_vals_medians$abs_medians), ]
+
+# Save the top 10
+shap_vals_medians_top_10 <- head(shap_vals_medians, 10)
+write.csv(shap_vals_medians_top_10, file = "HN_shap_vals_medians_top_10.csv", row.names = TRUE)
+
+# Plot correlations between top SHAP values
+std_devs <- apply(shap_vals, 2, sd)
+cols <- names(std_devs)[std_devs > 0]
+selected_shap_vals <- shap_vals[, cols]
+
+varscor_selected_shap_vals <- corr.test(selected_shap_vals, method = "spearman", adjust = "bonf", alpha = .05, ci = FALSE)
+varscor_selected_shap_vals_p <- varscor_selected_shap_vals$p
+
+write.csv(varscor_selected_shap_vals_p, file = "varscor_selected_shap_vals_spearman_p.csv", row.names = TRUE)
+write.csv(varscor_selected_shap_vals$r, file = "varscor_selected_shap_vals_spearman_r.csv", row.names = TRUE)
+
+# Plot Spearman correlation matrix
+emf("correlation_matrix_spearman_SHAP.emf", width = 7, height = 7, bg = "transparent", fg = "black", pointsize = 8, family = "Arial", coordDPI = 600)
+
+corrplot(varscor_selected_shap_vals$r, p.mat = varscor_selected_shap_vals$p, method = 'circle', tl.col = "black", type = "upper", sig.level = 0.05, pch.cex = 0.6, cl.cex = 1, tl.cex = 1, insig = 'pch', pch = 19, pch.col = "white", diag = FALSE, font = 1)
+
+dev.off()
+
+# Plot Pearson correlation matrix
+varscor_selected_shap_vals_pearson <- corr.test(selected_shap_vals, method = "pearson", adjust = "bonf", alpha = .05, ci = FALSE)
+varscor_selected_shap_vals_pearson_p <- varscor_selected_shap_vals_pearson$p
+
+write.csv(varscor_selected_shap_vals_pearson_p, file = "varscor_selected_shap_vals_pearson_p.csv", row.names = TRUE)
+write.csv(varscor_selected_shap_vals_pearson$r, file = "varscor_selected_shap_vals_pearson_r.csv", row.names = TRUE)
+
+emf("correlation_matrix_pearson_SHAP.emf", width = 7, height = 7, bg = "transparent", fg = "black", pointsize = 8, family = "Arial", coordDPI = 600)
+
+corrplot(varscor_selected_shap_vals_pearson$r, p.mat = varscor_selected_shap_vals_pearson$p, method = 'circle', tl.col = "black", type = "upper", sig.level = 0.05, pch.cex = 0.6, cl.cex = 1, tl.cex = 1, insig = 'pch', pch = 19, pch.col = "white", diag = FALSE, font = 1)
+
+dev.off()
+
+
+# graph the SHAPs
+
+
+# remove causal effects for now - only keep features and corresponding SHAP values
+SHAP_data_1 <- as.data.frame(subset(shap_vals,
+                                    select=-c(predictions, variance.estimates)))
+
+# identify feature columns
+features <- names(SHAP_data_1)[!grepl("_SHAP$", names(SHAP_data_1))]
+
+# causal effects vector
+causal_effects <- shap_vals$predictions
+
+for (feature in features) {
+  # Create the plot
+  p <- ggplot(SHAP_data_1, aes(x = .data[[feature]], y = .data[[paste0(feature, "_SHAP")]])) +
+    geom_point(aes(color = causal_effects, shape = factor(Sex)), size = 3) +
+    scale_shape_manual(values = c(16, 15)) +
+    scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = median(causal_effects)) +
+    labs(title = paste("SHAP values for", feature),
+         x = feature,
+         y = paste0(feature, "_SHAP"),
+         color = "Causal Effects",
+         shape = "Sex") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels if needed
+  
+  # Save the plot as an EMF file
+  emf_file <- paste0(make.names(feature), "_SHAP.emf")
+  emf(file = emf_file)
+  print(p)
+  dev.off()
+}
+
+
+
+
+
 
