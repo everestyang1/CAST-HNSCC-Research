@@ -1,6 +1,6 @@
 ## **Columbia Irving Medical School - Cancer Research**
 
-#### **Everest Yang, Igor Shuryak**
+#### **Everest Yang, Ria Vasishtha, Igor Shuryak**
 
 ### **A Causal Machine Learning Approach in Analyzing the Effects of Radiation Therapy on Oropharyngeal Cancer Survival**
 
