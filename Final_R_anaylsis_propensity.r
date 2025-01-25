@@ -1,4 +1,4 @@
-rm(list=ls()) #will remove ALL objects 
+rm(list=ls())
 
 library(caret)
 library(car)
@@ -22,20 +22,40 @@ library(GGally)
 library(dplyr)
 
 plot_effects_distribution <- function(results, method, horizon) {
-    effects_df <- data.frame(effects = results$predictions)
-    
-    p <- ggplot(effects_df, aes(x = effects)) +
-        geom_histogram(bins = 30, fill = "lightblue", color = "black") +
-        geom_vline(xintercept = results$ate[1], color = "red", linetype = "dashed") +
-        theme_bw() +
-        labs(title = sprintf("Distribution of Treatment Effects at %d month Horizon (%s)", 
-                            horizon, method),
-             x = "Individual treatment effect",
-             y = "Count")
-    
-    ggsave(sprintf("treatment_effects_%s_%dm.png", method, horizon), p, 
-           width = 7, height = 7)
+  effects_df <- data.frame(effects = results$predictions)
+  
+  # Check for zero variance
+  if (var(effects_df$effects) == 0) {
+    effects_df$effects <- jitter(effects_df$effects, amount = 0.01)
+  }
+  
+  # Calculate the number of bins using the Freedman-Diaconis rule
+  iqr <- IQR(effects_df$effects)
+  n <- length(effects_df$effects)
+  bin_width <- 2 * iqr / (n^(1/3))
+  num_bins <- ceiling((max(effects_df$effects) - min(effects_df$effects)) / bin_width)
+  
+  # Debugging information
+  print(paste("ATE:", results$ate[1]))
+  print(paste("Mean of predictions:", mean(effects_df$effects)))
+  
+  p <- ggplot(effects_df, aes(x = effects)) +
+    geom_histogram(bins = num_bins, fill = "lightblue", color = "black") +
+
+# here ATE does not always correspond to mean of sample predictions because ATE is not just the 
+#  mean of sample estimates, it is calculated by doubly robust methods
+#  To avoid confusion I deleted the red line
+#    geom_vline(xintercept = results$ate[1], color = "red", linetype = "dashed") +
+    theme_bw() +
+    labs(title = sprintf("Distribution of Treatment Effects at %d month Horizon (%s)", 
+                         horizon, method),
+         x = "Individual treatment effect",
+         y = "Count")
+  
+  ggsave(sprintf("treatment_effects_%s_%dm.png", method, horizon), p, 
+         width = 7, height = 7)
 }
+
 
 plot_treatment_effects_by_covariate <- function(predictions, X, var_name, 
                                               keep_indices = NULL,
@@ -226,7 +246,60 @@ prepare_cancer_data <- function(data_set, seed = 99) {
 #prepared_data <- prepare_cancer_data(simulated_data)
 
 # or read real data instead
-real_data <- read.csv("cancer_data_chemo_cause_months.csv")
+real_data_raw <- read.csv("selected_data_with_sites_processed.csv")
+str(real_data_raw)
+
+# calculate BEDs on this data set
+#   calculate BED_DI and BED_DD variants
+
+
+#   parameters
+
+# cell killing linear term (1/Gy)
+alpha <- 0.2
+
+# cell killing alpha/beta ratio (Gy)
+r <- 10
+
+# accelerated repopulation rate (exponential, 1/day) for DI model
+L_DI <- 0.2
+
+# accelerated maximum repopulation rate (exponential, 1/day) for DD model
+L_DD <- 0.5
+
+# time after treatment begins when accelerated repopulation starts, DI model (days)
+Tk <- 28
+
+# number of dose fractions
+m <- real_data_raw$Fx
+
+# dose/fraction (Gy)
+d <- real_data_raw$d_Frac
+
+# total treatment time (days)
+T <- real_data_raw$Total_days_RT
+
+# dose-independent model BED
+real_data_raw$BED_DI <- m*d*(1 + d/r) - L_DI*log(1 + exp(3*T - 3*Tk))/(3*alpha)
+
+# dose-dependent model BED
+real_data_raw$BED_DD <- (r*L_DD*(exp(-m*alpha*d*(d + r)/(T*r)) - 1)*log(1 + exp(3*(47*m*d^2 + 47*d*m*r 
+          + 28*r*log((1 + exp(141 - 3*Tk))^(-L_DI/((exp(-(84*alpha)/47) - 1)*L_DD)) - 1) 
+          - 3948*r)*T/(47*m*d*(d + r)))) + 3*m*alpha*d*(d + r))/(3*r*alpha)
+
+# rename data
+real_data <- real_data_raw
+
+# remove redundant features which were combined into BEDs
+real_data <- real_data[, !(names(real_data) %in% c("Fx", "d_Frac", "Total_days_RT"))]
+
+summary(real_data)
+
+
+write.csv(real_data, file = "real_data.csv", row.names = F)
+
+
+
 prepared_data <- prepare_cancer_data(real_data)
 
 trainSet <- prepared_data$trainSet
@@ -861,7 +934,7 @@ refutation_results <- refutation_fake_confounder_tests(
   testSet_events = testSet_events,
   W_hat_test_adj2 = W_hat_test_adj2,
   # You can reduce/add if necessary b/c right now it is taking too long to run
-  num_repetitions = 10,
+  num_repetitions = 20,
   output_dir = "refutation_test_results"
 )
 
@@ -981,7 +1054,7 @@ pfun <- function(object, newdata) {
   predict(object, newdata = newdata, estimate.variance = TRUE)$predictions
 }
 
-nsim_shap <- 10
+nsim_shap <- 1000
 
 shap <- fastshap::explain(forest_sel, X = trainSet_X, pred_wrapper = pfun, nsim = nsim_shap)
 colnames(shap) <- paste0(colnames(shap), "_SHAP")
