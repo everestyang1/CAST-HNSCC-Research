@@ -1,4 +1,4 @@
-rm(list=ls())
+rm(list=ls()) #will remove ALL objects 
 
 library(caret)
 library(car)
@@ -179,7 +179,7 @@ simulate_simple_data <- function(n_samples, true_effect, seed = 42) {
 
 # call the simulation function
 
-simulated_data <- simulate_simple_data(n_samples = 3000, true_effect = 6)
+simulated_data <- simulate_simple_data(n_samples = 3000, true_effect = 10)
 str(simulated_data)
 write.csv(simulated_data, file = file.path("simulated_data.csv"), row.names = FALSE)
 
@@ -247,7 +247,6 @@ prepare_cancer_data <- function(data_set, seed = 99) {
 
 # or read real data instead
 real_data_raw <- read.csv("selected_data_with_sites_processed.csv")
-
 str(real_data_raw)
 
 # calculate BEDs on this data set
@@ -300,7 +299,7 @@ summary(real_data)
 write.csv(real_data, file = "real_data.csv", row.names = F)
 
 
-
+# use real data
 prepared_data <- prepare_cancer_data(real_data)
 
 trainSet <- prepared_data$trainSet
@@ -360,102 +359,95 @@ ggsave(filename = "Kaplan_Meier_Survival_Curves_risk_table.png", plot = p_KM$tab
 #######
 # propensity score model
 
-fit_propensity_model <- function(trainSet, testSet, seed = 1234, alpha_range = seq(0.01, 0.99, by = 0.01), output_dir = ".") {
-  # Create output directory if it doesn't exist
+fit_propensity_model <- function(trainSet, testSet, seed = 1234, output_dir = ".") {
   dir.create(output_dir, showWarnings = FALSE)
   
-  # Fit logistic regression with elastic net penalty to get propensity scores for Cause
+  # Create feature matrices for regression forest
   X_matrix_train <- model.matrix(~ . - Cause - time - event, data = trainSet)[,-1]
   Y_vector_train <- trainSet$Cause
   X_matrix_test <- model.matrix(~ . - Cause - time - event, data = testSet)[,-1]
   
-  set.seed(seed)
-  cv_models <- list()
+  # Fit regression forest for propensity scores
+  rf_propensity <- regression_forest(
+    X = X_matrix_train,
+    Y = Y_vector_train,
+    num.trees = 2000,
+    honesty = TRUE,
+    tune.parameters = "all",
+    seed = seed
+  )
   
-  for (alpha_val in alpha_range) {
-    cv_model <- cv.glmnet(X_matrix_train, Y_vector_train,
-                          family = "binomial",
-                          type.measure = "class",
-                          alpha = alpha_val,
-                          nfolds = 10)
-    cv_models[[as.character(alpha_val)]] <- cv_model
-  }
-  
-  optimal_lambdas <- sapply(cv_models, function(model) model$lambda.min)
-  best_alpha <- alpha_range[which.min(optimal_lambdas)]
-  optimal_lambda <- cv_models[[as.character(best_alpha)]]$lambda.min
-  final_model <- glmnet(X_matrix_train, Y_vector_train,
-                        family = "binomial",
-                        alpha = best_alpha,
-                        lambda = optimal_lambda)
-  cv_glmnet_model <- final_model
-  
-  # model coefficients
-  cv_glmnet_model_coefs <- as.data.frame(as.matrix(coef(cv_glmnet_model)))
-  write.csv(cv_glmnet_model_coefs, file = file.path(output_dir, "cv_glmnet_model_coefs.csv"), row.names = TRUE)
+  # Get variable importance
+  var_imp <- variable_importance(rf_propensity)
+  var_imp_df <- data.frame(
+    variable = colnames(X_matrix_train),
+    importance = var_imp
+  )
+  write.csv(var_imp_df, file.path(output_dir, "rf_variable_importance.csv"), row.names = FALSE)
   
   # Predict propensity scores
-  W.hat_train <- predict(cv_glmnet_model, newx = X_matrix_train, type = "response", s = optimal_lambda)
-  W.hat_test <- predict(cv_glmnet_model, newx = X_matrix_test, type = "response", s = optimal_lambda)
+  W.hat_train <- predict(rf_propensity, X_matrix_train)$predictions
+  W.hat_test <- predict(rf_propensity, X_matrix_test)$predictions
   
-  # propensity scores to datasets
-  trainSet_with_scores <- as.data.frame(cbind(trainSet, W.hat_train))
-  colnames(trainSet_with_scores) <- c(colnames(trainSet), "W_hat")
+  # Add scores to datasets
+  trainSet_with_scores <- cbind(trainSet, W.hat = W.hat_train)
+  testSet_with_scores <- cbind(testSet, W.hat = W.hat_test)
   
-  testSet_with_scores <- as.data.frame(cbind(testSet, W.hat_test))
-  colnames(testSet_with_scores) <- c(colnames(testSet), "W_hat")
-  
-  # datasets with scores
+  # Save datasets with scores
   write.csv(trainSet_with_scores, file.path(output_dir, "trainSet_with_scores.csv"), row.names = FALSE)
   write.csv(testSet_with_scores, file.path(output_dir, "testSet_with_scores.csv"), row.names = FALSE)
   
-  # correlation matrix
+  # Create correlation matrix
   varscor_trainSet_with_scores_pearson <- corr.test(trainSet_with_scores, method = "pearson", adjust = "bonf", alpha = .05, ci = FALSE)
-  varscor_trainSet_with_scores_pearson_p <- varscor_trainSet_with_scores_pearson$p
   
-  write.csv(varscor_trainSet_with_scores_pearson_p, file = file.path(output_dir, "varscor_trainSet_with_scores_pearson_p.csv"), row.names = TRUE)
-  write.csv(varscor_trainSet_with_scores_pearson$r, file = file.path(output_dir, "varscor_trainSet_with_scores_pearson_r.csv"), row.names = TRUE)
+  write.csv(varscor_trainSet_with_scores_pearson$p, file.path(output_dir, "varscor_trainSet_with_scores_pearson_p.csv"), row.names = TRUE)
+  write.csv(varscor_trainSet_with_scores_pearson$r, file.path(output_dir, "varscor_trainSet_with_scores_pearson_r.csv"), row.names = TRUE)
   
-#  emf(file.path(output_dir, "correlation_matrix_pearson_propensity_scores_train.emf"), width = 7, height = 7, bg = "transparent",
-#      fg = "black", pointsize = 8, family = "Arial", coordDPI = 600)
-    png(file.path(output_dir, "correlation_matrix_pearson_propensity_scores_train.png"), 
-        width = 7, height = 7, units = "in", res = 600, bg = "white", pointsize = 8)
+  png(file.path(output_dir, "correlation_matrix_pearson_propensity_scores_train.png"), 
+      width = 7, height = 7, units = "in", res = 600, bg = "white", pointsize = 8)
   
-    corrplot(varscor_trainSet_with_scores_pearson$r, p.mat = varscor_trainSet_with_scores_pearson$p, method = 'circle', 
-           tl.col = "black", type = "upper", sig.level = 0.05, pch.cex = 0.6, cl.cex = 1, tl.cex = 1, insig = 'pch', 
-           pch = 19, pch.col = "white", diag = FALSE, font = 1)
-
-    dev.off()
+  corrplot(varscor_trainSet_with_scores_pearson$r, 
+           p.mat = varscor_trainSet_with_scores_pearson$p, 
+           method = 'circle', 
+           tl.col = "black", 
+           type = "upper", 
+           sig.level = 0.05, 
+           pch.cex = 0.6, 
+           cl.cex = 1, 
+           tl.cex = 1, 
+           insig = 'pch', 
+           pch = 19, 
+           pch.col = "white", 
+           diag = FALSE, 
+           font = 1)
+  dev.off()
   
-    png(file.path(output_dir, "propensity_scores_histogram_train.png"), 
-        width = 7, height = 7, units = "in", res = 600, bg = "white", pointsize = 8)
-    
-    hist(trainSet_with_scores$W_hat, breaks=30, xlab="Popensity score")
-    
-    dev.off()
-    
-  trainSet_with_scores_filtered <- subset(trainSet_with_scores, W_hat >= 0.05 & W_hat <= 0.95)
-  testSet_with_scores_filtered <- subset(testSet_with_scores, W_hat >= 0.05 & W_hat <= 0.95)
+  png(file.path(output_dir, "propensity_scores_histogram_train.png"), 
+      width = 7, height = 7, units = "in", res = 600, bg = "white", pointsize = 8)
+  hist(trainSet_with_scores$W.hat, breaks=30, xlab="Propensity score")
+  dev.off()
   
-  trainSet_X <- as.data.frame(subset(trainSet_with_scores_filtered, select = -c(W_hat, time, event, Cause)))
+  # Filter extreme propensity scores
+  trainSet_with_scores_filtered <- subset(trainSet_with_scores, W.hat >= 0.05 & W.hat <= 0.95)
+  testSet_with_scores_filtered <- subset(testSet_with_scores, W.hat >= 0.05 & W.hat <= 0.95)
+  
+  trainSet_X <- subset(trainSet_with_scores_filtered, select = -c(W.hat, time, event, Cause))
   trainSet_W <- trainSet_with_scores_filtered$Cause
   trainSet_times <- trainSet_with_scores_filtered$time
   trainSet_events <- trainSet_with_scores_filtered$event
-  W_hat_train_adj2 <- trainSet_with_scores_filtered$W_hat
+  W_hat_train_adj2 <- trainSet_with_scores_filtered$W.hat
   
-  testSet_X <- as.data.frame(subset(testSet_with_scores_filtered, select = -c(W_hat, time, event, Cause)))
+  testSet_X <- subset(testSet_with_scores_filtered, select = -c(W.hat, time, event, Cause))
   testSet_W <- testSet_with_scores_filtered$Cause
   testSet_times <- testSet_with_scores_filtered$time
   testSet_events <- testSet_with_scores_filtered$event
-  W_hat_test_adj2 <- testSet_with_scores_filtered$W_hat
+  W_hat_test_adj2 <- testSet_with_scores_filtered$W.hat
   
   write.csv(trainSet_with_scores_filtered, file.path(output_dir, "trainSet_with_scores_filtered.csv"), row.names = FALSE)
   write.csv(testSet_with_scores_filtered, file.path(output_dir, "testSet_with_scores_filtered.csv"), row.names = FALSE)
   
   return(list(
-    best_alpha = best_alpha,
-    optimal_lambda = optimal_lambda,
-    cv_glmnet_model = cv_glmnet_model,
+    rf_propensity = rf_propensity,
     trainSet_with_scores = trainSet_with_scores,
     testSet_with_scores = testSet_with_scores,
     trainSet_with_scores_filtered = trainSet_with_scores_filtered,
@@ -519,7 +511,7 @@ m_W_hat_test_adj2 <- as.matrix(W_hat_test_adj2)
 implement_causal_forests <- function(m_trainSet_X, m_trainSet_W, m_trainSet_times, m_trainSet_events,
                                      m_testSet_X, m_testSet_W, m_testSet_times, m_testSet_events,
                                      m_W_hat_train_adj2, m_W_hat_test_adj2,
-                                     n_trees_val = 3000, 
+                                     n_trees_val = 5000, 
                                      horizons = seq(12, 120, by=12),
                                      output_dir = ".") {
   
@@ -570,11 +562,12 @@ implement_causal_forests <- function(m_trainSet_X, m_trainSet_W, m_trainSet_time
         num.trees = n_trees_val, 
         target = "survival.probability", 
         horizon = horizon, 
-        honesty = TRUE,
-        min.node.size = 5,
-        alpha = 0.05,
-        imbalance.penalty = 0.1,
-        stabilize.splits = TRUE,
+#        honesty = TRUE,
+#        min.node.size = 5,
+#        alpha = 0.05,
+#        imbalance.penalty = 0.1,
+#        stabilize.splits = TRUE,
+        tune.parameters = "all", 
         seed = 123
       )
       
@@ -611,11 +604,12 @@ implement_causal_forests <- function(m_trainSet_X, m_trainSet_W, m_trainSet_time
         num.trees = n_trees_val, 
         target = "RMST", 
         horizon = horizon, 
-        honesty = TRUE,
-        min.node.size = 5,
-        alpha = 0.05,
-        imbalance.penalty = 0.1,
-        stabilize.splits = TRUE,
+#        honesty = TRUE,
+#        min.node.size = 5,
+#        alpha = 0.05,
+#        imbalance.penalty = 0.1,
+#        stabilize.splits = TRUE,
+        tune.parameters = "all", 
         seed = 123
       )
       
@@ -683,7 +677,7 @@ print(CSF_results$results_RMST)
 
 perform_dummy_outcome_tests <- function(trainSet_X, trainSet_W, trainSet_times, trainSet_events, 
                                         W_hat_train_adj2,  
-                                        num_repetitions = 20, n_trees_val = 3000, 
+                                        num_repetitions = 20, n_trees_val = 5000, 
                                         seed = 1234, output_dir = ".") {
   
   set.seed(seed)
@@ -782,7 +776,7 @@ dummy_results <- perform_dummy_outcome_tests(
 refutation_fake_confounder_tests <- function(trainSet_X, trainSet_W, trainSet_times, trainSet_events,
                                           W_hat_train_adj2, testSet_X, testSet_W, testSet_times, 
                                           testSet_events, W_hat_test_adj2,
-                                          num_repetitions = 20, n_trees_val = 3000,
+                                          num_repetitions = 20, n_trees_val = 5000,
                                           confounder_strength = c(0.1, 0.3, 0.5),
                                           seed = 1234, output_dir = ".") {
   
@@ -935,7 +929,7 @@ refutation_results <- refutation_fake_confounder_tests(
   testSet_events = testSet_events,
   W_hat_test_adj2 = W_hat_test_adj2,
   # You can reduce/add if necessary b/c right now it is taking too long to run
-  num_repetitions = 20,
+  num_repetitions = 10,
   output_dir = "refutation_test_results"
 )
 
@@ -951,7 +945,7 @@ print(summary(rmst_results$CATE_Estimate))
 ###########
 
 horizons <- seq(12, 120, by=12)
-n_trees_val <- 3000
+n_trees_val <- 5000
 
 # Negative control with an irrelevant causal variable: causal effect should be zero at all times
 set.seed(123)
@@ -965,7 +959,7 @@ HN_cate_results_RMST_train_neg_c <- data.frame(Horizon = integer(), Estimate = n
 
 for (h in horizons) {
   forest_h_RMST_train_neg_c <- causal_survival_forest(X = trainSet_X_neg_c, Y = trainSet_times, W = trainSet_W_neg_c, W.hat = as.vector(W_hat_train_adj2),
-                                                      D = trainSet_events, num.trees = n_trees_val, target = "RMST", horizon = h, tune.parameters = "all")
+                                                      D = trainSet_events, num.trees = n_trees_val, target = "RMST", horizon = h, tune.parameters = "all", seed = 123)
   ate_h_RMST_train_neg_c <- average_treatment_effect(forest_h_RMST_train_neg_c)
   HN_cate_results_RMST_train_neg_c <- rbind(HN_cate_results_RMST_train_neg_c, data.frame(Horizon = h, Estimate = ate_h_RMST_train_neg_c[1], Standard_Error = ate_h_RMST_train_neg_c[2]))
 }
@@ -978,7 +972,8 @@ HN_cate_results_RMST_train_neg_c_surv <- data.frame(Horizon = integer(), Estimat
 
 for (h in horizons) {
   forest_h_RMST_train_neg_c_surv <- causal_survival_forest(X = trainSet_X_neg_c, Y = trainSet_times, W = trainSet_W_neg_c, W.hat = as.vector(W_hat_train_adj2),
-                                                           D = trainSet_events, num.trees = n_trees_val, target = "survival.probability", horizon = h, tune.parameters = "all")
+                                                           D = trainSet_events, num.trees = n_trees_val, target = "survival.probability", horizon = h, 
+                                                           tune.parameters = "all",  seed = 123)
   ate_h_RMST_train_neg_c_surv <- average_treatment_effect(forest_h_RMST_train_neg_c_surv)
   HN_cate_results_RMST_train_neg_c_surv <- rbind(HN_cate_results_RMST_train_neg_c_surv, data.frame(Horizon = h, Estimate = ate_h_RMST_train_neg_c_surv[1], Standard_Error = ate_h_RMST_train_neg_c_surv[2]))
 }
@@ -1055,7 +1050,7 @@ pfun <- function(object, newdata) {
   predict(object, newdata = newdata, estimate.variance = TRUE)$predictions
 }
 
-nsim_shap <- 1000
+nsim_shap <- 100
 
 shap <- fastshap::explain(forest_sel, X = trainSet_X, pred_wrapper = pfun, nsim = nsim_shap)
 colnames(shap) <- paste0(colnames(shap), "_SHAP")
