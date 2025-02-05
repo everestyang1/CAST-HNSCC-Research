@@ -403,8 +403,12 @@ fit_propensity_model <- function(trainSet, testSet, seed = 1234, output_dir = ".
   write.csv(varscor_trainSet_with_scores_pearson$p, file.path(output_dir, "varscor_trainSet_with_scores_pearson_p.csv"), row.names = TRUE)
   write.csv(varscor_trainSet_with_scores_pearson$r, file.path(output_dir, "varscor_trainSet_with_scores_pearson_r.csv"), row.names = TRUE)
   
-  png(file.path(output_dir, "correlation_matrix_pearson_propensity_scores_train.png"), 
-      width = 7, height = 7, units = "in", res = 600, bg = "white", pointsize = 8)
+  # png(file.path(output_dir, "correlation_matrix_pearson_propensity_scores_train.png"), 
+  #     width = 7, height = 7, units = "in", res = 600, bg = "white", pointsize = 8)
+
+  if (dev.cur() > 1) dev.off()
+    png(filename = file.path(output_dir, "correlation_matrix_pearson_propensity_scores_train.png"), 
+    width = 700, height = 700)
   
   corrplot(varscor_trainSet_with_scores_pearson$r, 
            p.mat = varscor_trainSet_with_scores_pearson$p, 
@@ -1129,15 +1133,11 @@ plot_data <- data.frame(
 
 #emf("causal_effects_plot.emf", width = 7, height = 7, bg = "white", fg = "black", pointsize = 12, family = "Arial", coordDPI = 600)
 
-png("causal_effects_plot.png", width = 7, height = 7, units = "in", res = 500, bg = "white", pointsize = 12)
-ggplot(plot_data, aes(x = Patients, y = predictions)) +
+p <- ggplot(plot_data, aes(x = Patients, y = predictions)) +
   geom_point() +
   geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2) +
   labs(x = "Patients", y = "Causal effect (SP)")
-
-dev.off()
-
-#emf("causal_effects_histogram.emf", width = 7, height = 7, bg = "white", fg = "black", pointsize = 12, family = "Arial", coordDPI = 600)
+ggsave("causal_effects_plot.png", plot = p, width = 7, height = 7, dpi = 500, bg = "white")
 
 png("causal_effects_histogram.png", width = 7, height = 7, units = "in", res = 500, bg = "white", pointsize = 12)
 hist(ordered_shap_vals$predictions, xlab = "Causal effect (SP)")
