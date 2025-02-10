@@ -24,6 +24,7 @@ library(dplyr)
 plot_effects_distribution <- function(results, method, horizon) {
   effects_df <- data.frame(effects = results$predictions)
   
+  # Check for zero variance
   if (var(effects_df$effects) == 0) {
     effects_df$effects <- jitter(effects_df$effects, amount = 0.01)
   }
@@ -34,6 +35,7 @@ plot_effects_distribution <- function(results, method, horizon) {
   bin_width <- 2 * iqr / (n^(1/3))
   num_bins <- ceiling((max(effects_df$effects) - min(effects_df$effects)) / bin_width)
   
+  # Debugging information
   print(paste("ATE:", results$ate[1]))
   print(paste("Mean of predictions:", mean(effects_df$effects)))
   
@@ -84,6 +86,7 @@ plot_treatment_effects_by_covariate <- function(predictions, X, var_name,
 simulate_simple_data <- function(n_samples, true_effect, seed = 42) {
   set.seed(seed)
   
+  # Generate covariates with more realistic distributions
   data <- data.frame(
     Age = rnorm(n_samples, mean = 60, sd = 10),
     Sex = rbinom(n_samples, 1, 0.5),
@@ -176,7 +179,7 @@ simulate_simple_data <- function(n_samples, true_effect, seed = 42) {
 
 # call the simulation function
 
-simulated_data <- simulate_simple_data(n_samples = 3000, true_effect = 10)
+simulated_data <- simulate_simple_data(n_samples = 3000, true_effect = 6)
 str(simulated_data)
 write.csv(simulated_data, file = file.path("simulated_data.csv"), row.names = FALSE)
 
@@ -244,6 +247,7 @@ prepare_cancer_data <- function(data_set, seed = 99) {
 
 # or read real data instead
 real_data_raw <- read.csv("selected_data_with_sites_processed.csv")
+
 str(real_data_raw)
 
 # calculate BEDs on this data set
@@ -296,7 +300,7 @@ summary(real_data)
 write.csv(real_data, file = "real_data.csv", row.names = F)
 
 
-# use real data
+
 prepared_data <- prepare_cancer_data(real_data)
 
 trainSet <- prepared_data$trainSet
@@ -430,10 +434,8 @@ fit_propensity_model <- function(trainSet, testSet, seed = 1234, alpha_range = s
     
     dev.off()
     
-  propensity_score_cutoff <- 0.1    
-    
-  trainSet_with_scores_filtered <- subset(trainSet_with_scores, W_hat >= propensity_score_cutoff & W_hat <= (1-propensity_score_cutoff))
-  testSet_with_scores_filtered <- subset(testSet_with_scores, W_hat >= propensity_score_cutoff & W_hat <= (1-propensity_score_cutoff))
+  trainSet_with_scores_filtered <- subset(trainSet_with_scores, W_hat >= 0.05 & W_hat <= 0.95)
+  testSet_with_scores_filtered <- subset(testSet_with_scores, W_hat >= 0.05 & W_hat <= 0.95)
   
   trainSet_X <- as.data.frame(subset(trainSet_with_scores_filtered, select = -c(W_hat, time, event, Cause)))
   trainSet_W <- trainSet_with_scores_filtered$Cause
@@ -517,7 +519,7 @@ m_W_hat_test_adj2 <- as.matrix(W_hat_test_adj2)
 implement_causal_forests <- function(m_trainSet_X, m_trainSet_W, m_trainSet_times, m_trainSet_events,
                                      m_testSet_X, m_testSet_W, m_testSet_times, m_testSet_events,
                                      m_W_hat_train_adj2, m_W_hat_test_adj2,
-                                     n_trees_val = 5000, 
+                                     n_trees_val = 3000, 
                                      horizons = seq(12, 120, by=12),
                                      output_dir = ".") {
   
@@ -568,12 +570,11 @@ implement_causal_forests <- function(m_trainSet_X, m_trainSet_W, m_trainSet_time
         num.trees = n_trees_val, 
         target = "survival.probability", 
         horizon = horizon, 
-#        honesty = TRUE,
-#        min.node.size = 5,
-#        alpha = 0.05,
-#        imbalance.penalty = 0.1,
-#        stabilize.splits = TRUE,
-        tune.parameters = "all", 
+        honesty = TRUE,
+        min.node.size = 5,
+        alpha = 0.05,
+        imbalance.penalty = 0.1,
+        stabilize.splits = TRUE,
         seed = 123
       )
       
@@ -610,12 +611,11 @@ implement_causal_forests <- function(m_trainSet_X, m_trainSet_W, m_trainSet_time
         num.trees = n_trees_val, 
         target = "RMST", 
         horizon = horizon, 
-#        honesty = TRUE,
-#        min.node.size = 5,
-#        alpha = 0.05,
-#        imbalance.penalty = 0.1,
-#        stabilize.splits = TRUE,
-        tune.parameters = "all", 
+        honesty = TRUE,
+        min.node.size = 5,
+        alpha = 0.05,
+        imbalance.penalty = 0.1,
+        stabilize.splits = TRUE,
         seed = 123
       )
       
@@ -683,7 +683,7 @@ print(CSF_results$results_RMST)
 
 perform_dummy_outcome_tests <- function(trainSet_X, trainSet_W, trainSet_times, trainSet_events, 
                                         W_hat_train_adj2,  
-                                        num_repetitions = 20, n_trees_val = 5000, 
+                                        num_repetitions = 20, n_trees_val = 3000, 
                                         seed = 1234, output_dir = ".") {
   
   set.seed(seed)
@@ -782,7 +782,7 @@ dummy_results <- perform_dummy_outcome_tests(
 refutation_fake_confounder_tests <- function(trainSet_X, trainSet_W, trainSet_times, trainSet_events,
                                           W_hat_train_adj2, testSet_X, testSet_W, testSet_times, 
                                           testSet_events, W_hat_test_adj2,
-                                          num_repetitions = 20, n_trees_val = 5000,
+                                          num_repetitions = 20, n_trees_val = 3000,
                                           confounder_strength = c(0.1, 0.3, 0.5),
                                           seed = 1234, output_dir = ".") {
   
@@ -951,7 +951,7 @@ print(summary(rmst_results$CATE_Estimate))
 ###########
 
 horizons <- seq(12, 120, by=12)
-n_trees_val <- 5000
+n_trees_val <- 3000
 
 # Negative control with an irrelevant causal variable: causal effect should be zero at all times
 set.seed(123)
@@ -965,7 +965,7 @@ HN_cate_results_RMST_train_neg_c <- data.frame(Horizon = integer(), Estimate = n
 
 for (h in horizons) {
   forest_h_RMST_train_neg_c <- causal_survival_forest(X = trainSet_X_neg_c, Y = trainSet_times, W = trainSet_W_neg_c, W.hat = as.vector(W_hat_train_adj2),
-                                                      D = trainSet_events, num.trees = n_trees_val, target = "RMST", horizon = h, tune.parameters = "all", seed = 123)
+                                                      D = trainSet_events, num.trees = n_trees_val, target = "RMST", horizon = h, tune.parameters = "all")
   ate_h_RMST_train_neg_c <- average_treatment_effect(forest_h_RMST_train_neg_c)
   HN_cate_results_RMST_train_neg_c <- rbind(HN_cate_results_RMST_train_neg_c, data.frame(Horizon = h, Estimate = ate_h_RMST_train_neg_c[1], Standard_Error = ate_h_RMST_train_neg_c[2]))
 }
@@ -978,8 +978,7 @@ HN_cate_results_RMST_train_neg_c_surv <- data.frame(Horizon = integer(), Estimat
 
 for (h in horizons) {
   forest_h_RMST_train_neg_c_surv <- causal_survival_forest(X = trainSet_X_neg_c, Y = trainSet_times, W = trainSet_W_neg_c, W.hat = as.vector(W_hat_train_adj2),
-                                                           D = trainSet_events, num.trees = n_trees_val, target = "survival.probability", horizon = h, 
-                                                           tune.parameters = "all",  seed = 123)
+                                                           D = trainSet_events, num.trees = n_trees_val, target = "survival.probability", horizon = h, tune.parameters = "all")
   ate_h_RMST_train_neg_c_surv <- average_treatment_effect(forest_h_RMST_train_neg_c_surv)
   HN_cate_results_RMST_train_neg_c_surv <- rbind(HN_cate_results_RMST_train_neg_c_surv, data.frame(Horizon = h, Estimate = ate_h_RMST_train_neg_c_surv[1], Standard_Error = ate_h_RMST_train_neg_c_surv[2]))
 }
