@@ -1,4 +1,4 @@
-rm(list=ls()) #will remove ALL objects 
+rm(list=ls())
 
 library(caret)
 library(car)
@@ -22,20 +22,38 @@ library(GGally)
 library(dplyr)
 
 plot_effects_distribution <- function(results, method, horizon) {
-    effects_df <- data.frame(effects = results$predictions)
-    
-    p <- ggplot(effects_df, aes(x = effects)) +
-        geom_histogram(bins = 30, fill = "lightblue", color = "black") +
-        geom_vline(xintercept = results$ate[1], color = "red", linetype = "dashed") +
-        theme_bw() +
-        labs(title = sprintf("Distribution of Treatment Effects at %d month Horizon (%s)", 
-                            horizon, method),
-             x = "Individual treatment effect",
-             y = "Count")
-    
-    ggsave(sprintf("treatment_effects_%s_%dm.png", method, horizon), p, 
-           width = 7, height = 7)
+  effects_df <- data.frame(effects = results$predictions)
+  
+  if (var(effects_df$effects) == 0) {
+    effects_df$effects <- jitter(effects_df$effects, amount = 0.01)
+  }
+  
+  # Calculate the number of bins using the Freedman-Diaconis rule
+  iqr <- IQR(effects_df$effects)
+  n <- length(effects_df$effects)
+  bin_width <- 2 * iqr / (n^(1/3))
+  num_bins <- ceiling((max(effects_df$effects) - min(effects_df$effects)) / bin_width)
+  
+  print(paste("ATE:", results$ate[1]))
+  print(paste("Mean of predictions:", mean(effects_df$effects)))
+  
+  p <- ggplot(effects_df, aes(x = effects)) +
+    geom_histogram(bins = num_bins, fill = "lightblue", color = "black") +
+
+# here ATE does not always correspond to mean of sample predictions because ATE is not just the 
+#  mean of sample estimates, it is calculated by doubly robust methods
+#  To avoid confusion I deleted the red line
+#    geom_vline(xintercept = results$ate[1], color = "red", linetype = "dashed") +
+    theme_bw() +
+    labs(title = sprintf("Distribution of Treatment Effects at %d month Horizon (%s)", 
+                         horizon, method),
+         x = "Individual treatment effect",
+         y = "Count")
+  
+  ggsave(sprintf("treatment_effects_%s_%dm.png", method, horizon), p, 
+         width = 7, height = 7)
 }
+
 
 plot_treatment_effects_by_covariate <- function(predictions, X, var_name, 
                                               keep_indices = NULL,
@@ -66,7 +84,6 @@ plot_treatment_effects_by_covariate <- function(predictions, X, var_name,
 simulate_simple_data <- function(n_samples, true_effect, seed = 42) {
   set.seed(seed)
   
-  # Generate covariates with more realistic distributions
   data <- data.frame(
     Age = rnorm(n_samples, mean = 60, sd = 10),
     Sex = rbinom(n_samples, 1, 0.5),
@@ -159,7 +176,7 @@ simulate_simple_data <- function(n_samples, true_effect, seed = 42) {
 
 # call the simulation function
 
-simulated_data <- simulate_simple_data(n_samples = 3000, true_effect = 6)
+simulated_data <- simulate_simple_data(n_samples = 3000, true_effect = 10)
 str(simulated_data)
 write.csv(simulated_data, file = file.path("simulated_data.csv"), row.names = FALSE)
 
@@ -226,7 +243,60 @@ prepare_cancer_data <- function(data_set, seed = 99) {
 #prepared_data <- prepare_cancer_data(simulated_data)
 
 # or read real data instead
-real_data <- read.csv("cancer_data_chemo_cause_months.csv")
+real_data_raw <- read.csv("selected_data_with_sites_processed.csv")
+str(real_data_raw)
+
+# calculate BEDs on this data set
+#   calculate BED_DI and BED_DD variants
+
+
+#   parameters
+
+# cell killing linear term (1/Gy)
+alpha <- 0.2
+
+# cell killing alpha/beta ratio (Gy)
+r <- 10
+
+# accelerated repopulation rate (exponential, 1/day) for DI model
+L_DI <- 0.2
+
+# accelerated maximum repopulation rate (exponential, 1/day) for DD model
+L_DD <- 0.5
+
+# time after treatment begins when accelerated repopulation starts, DI model (days)
+Tk <- 28
+
+# number of dose fractions
+m <- real_data_raw$Fx
+
+# dose/fraction (Gy)
+d <- real_data_raw$d_Frac
+
+# total treatment time (days)
+T <- real_data_raw$Total_days_RT
+
+# dose-independent model BED
+real_data_raw$BED_DI <- m*d*(1 + d/r) - L_DI*log(1 + exp(3*T - 3*Tk))/(3*alpha)
+
+# dose-dependent model BED
+real_data_raw$BED_DD <- (r*L_DD*(exp(-m*alpha*d*(d + r)/(T*r)) - 1)*log(1 + exp(3*(47*m*d^2 + 47*d*m*r 
+          + 28*r*log((1 + exp(141 - 3*Tk))^(-L_DI/((exp(-(84*alpha)/47) - 1)*L_DD)) - 1) 
+          - 3948*r)*T/(47*m*d*(d + r)))) + 3*m*alpha*d*(d + r))/(3*r*alpha)
+
+# rename data
+real_data <- real_data_raw
+
+# remove redundant features which were combined into BEDs
+real_data <- real_data[, !(names(real_data) %in% c("Fx", "d_Frac", "Total_days_RT"))]
+
+summary(real_data)
+
+
+write.csv(real_data, file = "real_data.csv", row.names = F)
+
+
+# use real data
 prepared_data <- prepare_cancer_data(real_data)
 
 trainSet <- prepared_data$trainSet
@@ -360,8 +430,10 @@ fit_propensity_model <- function(trainSet, testSet, seed = 1234, alpha_range = s
     
     dev.off()
     
-  trainSet_with_scores_filtered <- subset(trainSet_with_scores, W_hat >= 0.05 & W_hat <= 0.95)
-  testSet_with_scores_filtered <- subset(testSet_with_scores, W_hat >= 0.05 & W_hat <= 0.95)
+  propensity_score_cutoff <- 0.1    
+    
+  trainSet_with_scores_filtered <- subset(trainSet_with_scores, W_hat >= propensity_score_cutoff & W_hat <= (1-propensity_score_cutoff))
+  testSet_with_scores_filtered <- subset(testSet_with_scores, W_hat >= propensity_score_cutoff & W_hat <= (1-propensity_score_cutoff))
   
   trainSet_X <- as.data.frame(subset(trainSet_with_scores_filtered, select = -c(W_hat, time, event, Cause)))
   trainSet_W <- trainSet_with_scores_filtered$Cause
@@ -445,7 +517,7 @@ m_W_hat_test_adj2 <- as.matrix(W_hat_test_adj2)
 implement_causal_forests <- function(m_trainSet_X, m_trainSet_W, m_trainSet_times, m_trainSet_events,
                                      m_testSet_X, m_testSet_W, m_testSet_times, m_testSet_events,
                                      m_W_hat_train_adj2, m_W_hat_test_adj2,
-                                     n_trees_val = 3000, 
+                                     n_trees_val = 5000, 
                                      horizons = seq(12, 120, by=12),
                                      output_dir = ".") {
   
@@ -496,11 +568,12 @@ implement_causal_forests <- function(m_trainSet_X, m_trainSet_W, m_trainSet_time
         num.trees = n_trees_val, 
         target = "survival.probability", 
         horizon = horizon, 
-        honesty = TRUE,
-        min.node.size = 5,
-        alpha = 0.05,
-        imbalance.penalty = 0.1,
-        stabilize.splits = TRUE,
+#        honesty = TRUE,
+#        min.node.size = 5,
+#        alpha = 0.05,
+#        imbalance.penalty = 0.1,
+#        stabilize.splits = TRUE,
+        tune.parameters = "all", 
         seed = 123
       )
       
@@ -537,11 +610,12 @@ implement_causal_forests <- function(m_trainSet_X, m_trainSet_W, m_trainSet_time
         num.trees = n_trees_val, 
         target = "RMST", 
         horizon = horizon, 
-        honesty = TRUE,
-        min.node.size = 5,
-        alpha = 0.05,
-        imbalance.penalty = 0.1,
-        stabilize.splits = TRUE,
+#        honesty = TRUE,
+#        min.node.size = 5,
+#        alpha = 0.05,
+#        imbalance.penalty = 0.1,
+#        stabilize.splits = TRUE,
+        tune.parameters = "all", 
         seed = 123
       )
       
@@ -609,7 +683,7 @@ print(CSF_results$results_RMST)
 
 perform_dummy_outcome_tests <- function(trainSet_X, trainSet_W, trainSet_times, trainSet_events, 
                                         W_hat_train_adj2,  
-                                        num_repetitions = 20, n_trees_val = 3000, 
+                                        num_repetitions = 20, n_trees_val = 5000, 
                                         seed = 1234, output_dir = ".") {
   
   set.seed(seed)
@@ -708,7 +782,7 @@ dummy_results <- perform_dummy_outcome_tests(
 refutation_fake_confounder_tests <- function(trainSet_X, trainSet_W, trainSet_times, trainSet_events,
                                           W_hat_train_adj2, testSet_X, testSet_W, testSet_times, 
                                           testSet_events, W_hat_test_adj2,
-                                          num_repetitions = 20, n_trees_val = 3000,
+                                          num_repetitions = 20, n_trees_val = 5000,
                                           confounder_strength = c(0.1, 0.3, 0.5),
                                           seed = 1234, output_dir = ".") {
   
@@ -861,7 +935,7 @@ refutation_results <- refutation_fake_confounder_tests(
   testSet_events = testSet_events,
   W_hat_test_adj2 = W_hat_test_adj2,
   # You can reduce/add if necessary b/c right now it is taking too long to run
-  num_repetitions = 10,
+  num_repetitions = 20,
   output_dir = "refutation_test_results"
 )
 
@@ -877,7 +951,7 @@ print(summary(rmst_results$CATE_Estimate))
 ###########
 
 horizons <- seq(12, 120, by=12)
-n_trees_val <- 3000
+n_trees_val <- 5000
 
 # Negative control with an irrelevant causal variable: causal effect should be zero at all times
 set.seed(123)
@@ -891,7 +965,7 @@ HN_cate_results_RMST_train_neg_c <- data.frame(Horizon = integer(), Estimate = n
 
 for (h in horizons) {
   forest_h_RMST_train_neg_c <- causal_survival_forest(X = trainSet_X_neg_c, Y = trainSet_times, W = trainSet_W_neg_c, W.hat = as.vector(W_hat_train_adj2),
-                                                      D = trainSet_events, num.trees = n_trees_val, target = "RMST", horizon = h, tune.parameters = "all")
+                                                      D = trainSet_events, num.trees = n_trees_val, target = "RMST", horizon = h, tune.parameters = "all", seed = 123)
   ate_h_RMST_train_neg_c <- average_treatment_effect(forest_h_RMST_train_neg_c)
   HN_cate_results_RMST_train_neg_c <- rbind(HN_cate_results_RMST_train_neg_c, data.frame(Horizon = h, Estimate = ate_h_RMST_train_neg_c[1], Standard_Error = ate_h_RMST_train_neg_c[2]))
 }
@@ -904,7 +978,8 @@ HN_cate_results_RMST_train_neg_c_surv <- data.frame(Horizon = integer(), Estimat
 
 for (h in horizons) {
   forest_h_RMST_train_neg_c_surv <- causal_survival_forest(X = trainSet_X_neg_c, Y = trainSet_times, W = trainSet_W_neg_c, W.hat = as.vector(W_hat_train_adj2),
-                                                           D = trainSet_events, num.trees = n_trees_val, target = "survival.probability", horizon = h, tune.parameters = "all")
+                                                           D = trainSet_events, num.trees = n_trees_val, target = "survival.probability", horizon = h, 
+                                                           tune.parameters = "all",  seed = 123)
   ate_h_RMST_train_neg_c_surv <- average_treatment_effect(forest_h_RMST_train_neg_c_surv)
   HN_cate_results_RMST_train_neg_c_surv <- rbind(HN_cate_results_RMST_train_neg_c_surv, data.frame(Horizon = h, Estimate = ate_h_RMST_train_neg_c_surv[1], Standard_Error = ate_h_RMST_train_neg_c_surv[2]))
 }
@@ -981,7 +1056,7 @@ pfun <- function(object, newdata) {
   predict(object, newdata = newdata, estimate.variance = TRUE)$predictions
 }
 
-nsim_shap <- 10
+nsim_shap <- 1000
 
 shap <- fastshap::explain(forest_sel, X = trainSet_X, pred_wrapper = pfun, nsim = nsim_shap)
 colnames(shap) <- paste0(colnames(shap), "_SHAP")

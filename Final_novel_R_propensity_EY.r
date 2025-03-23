@@ -76,7 +76,6 @@ plot_treatment_effects_by_covariate <- function(predictions, X, var_name,
              y = "Estimated Treatment Effect")
     
     ggsave(paste0("effects_by_", tolower(var_name), ".png"), p, width = 8, height = 6)
-    
     return(p)
 }
 
@@ -667,6 +666,345 @@ implement_causal_forests <- function(m_trainSet_X, m_trainSet_W, m_trainSet_time
 }
 
 
+#########
+# Novel method: Time-Varying Treatment Effects Framework
+#########
+
+# This function models the trajectory of treatment effects over time
+# It captures the rising and diminishing patterns observed in radiotherapy outcomes
+
+model_temporal_treatment_effects <- function(results_df, 
+                                           method = c("parametric", "nonparametric"),
+                                           output_dir = ".",
+                                           result_type = "SP") {
+  
+  # Create output directory if it doesn't exist
+  dir.create(output_dir, showWarnings = FALSE)
+  
+  # Add diagnostic information
+  cat("Input dataframe dimensions:", dim(results_df), "\n")
+  cat("Column names:", paste(colnames(results_df), collapse=", "), "\n")
+  
+  # Dynamically set the column names based on result_type
+  estimate_col <- paste0("ATE_estimate_test_", result_type)
+  se_col <- paste0("ATE_se_test_", result_type)
+  
+  # Check if the columns exist in the dataset
+  if(!estimate_col %in% colnames(results_df)) {
+    stop(paste("Column", estimate_col, "not found in results data frame."))
+  }
+  if(!se_col %in% colnames(results_df)) {
+    stop(paste("Column", se_col, "not found in results data frame."))
+  }
+  
+  # Print NA diagnostics
+  cat("NA values in horizon_sel:", sum(is.na(results_df$horizon_sel)), "\n")
+  cat("NA values in", estimate_col, ":", sum(is.na(results_df[[estimate_col]])), "\n")
+  cat("NA values in", se_col, ":", sum(is.na(results_df[[se_col]])), "\n")
+  
+  # Filter out rows with NA values
+  valid_df <- results_df[!is.na(results_df$horizon_sel) & 
+                          !is.na(results_df[[estimate_col]]) & 
+                          !is.na(results_df[[se_col]]), ]
+  
+  # Check if we still have data after filtering
+  if(nrow(valid_df) == 0) {
+    stop("No valid data remains after filtering NA values.")
+  }
+  
+  cat("Filtered dataframe dimensions:", dim(valid_df), "\n")
+  print(head(valid_df))
+  
+  # Extract horizons and estimates from valid data
+  horizons <- valid_df$horizon_sel
+  estimates <- valid_df[[estimate_col]]
+  se_values <- valid_df[[se_col]]
+  
+  # Basic visualization of raw estimates
+  raw_plot <- ggplot(valid_df, aes(x = horizon_sel, y = .data[[estimate_col]])) +
+    geom_point(size = 3) +
+    geom_errorbar(aes(ymin = .data[[estimate_col]] - .data[[se_col]], 
+                      ymax = .data[[estimate_col]] + .data[[se_col]]), width = 2) +
+    labs(title = paste("Raw Treatment Effect Estimates Over Time -", result_type),
+         x = "Months after treatment",
+         y = paste("Treatment effect (", result_type, ")", sep = "")) +
+    theme_bw() +
+    theme(text = element_text(size = 12))
+  
+  ggsave(file.path(output_dir, paste0("raw_temporal_effects_", result_type, ".png")), raw_plot, width = 8, height = 6)
+  
+  # Method 1: Parametric approach - Fit quadratic model to capture rise and fall
+  if(method[1] == "parametric" || length(method) > 1) {
+    # Quadratic model to capture rise and fall with valid data
+    quad_model <- lm(estimates ~ horizons + I(horizons^2), weights = 1/se_values^2)
+    
+    # Calculate peak timing
+    peak_coefs <- coef(quad_model)
+    
+    # Make sure we have valid coefficients
+    if(length(peak_coefs) < 3 || is.na(peak_coefs[2]) || is.na(peak_coefs[3]) || peak_coefs[3] == 0) {
+      warning("Cannot calculate peak time: insufficient or invalid model coefficients")
+      peak_time <- NA
+      peak_effect <- NA
+    } else {
+      peak_time <- -peak_coefs[2] / (2 * peak_coefs[3])
+      peak_effect <- predict(quad_model, newdata = data.frame(horizons = peak_time))
+      
+      # Check if peak_time is within range
+      if(peak_time < min(horizons) || peak_time > max(horizons)) {
+        warning("Calculated peak time is outside the range of observed horizons")
+      }
+    }
+    
+    # Calculate half-life with error handling
+    if(!is.na(peak_time) && !is.na(peak_effect)) {
+      predict_fn <- function(x) predict(quad_model, newdata = data.frame(horizons = x)) - (peak_effect/2)
+      half_life <- try(uniroot(predict_fn, c(peak_time, max(horizons) + 50))$root - peak_time, silent = TRUE)
+      
+      if(inherits(half_life, "try-error")) {
+        half_life <- NA
+        warning("Could not calculate half-life, effect may not decline to half of peak within range")
+      }
+    } else {
+      half_life <- NA
+    }
+    
+    # Generate predictions across full time range
+    pred_horizons <- seq(min(horizons), max(horizons), length.out = 100)
+    pred_effects <- predict(quad_model, newdata = data.frame(horizons = pred_horizons), 
+                          se.fit = TRUE)
+    
+    # Create prediction dataframe
+    pred_df <- data.frame(
+      horizons = pred_horizons,
+      effect = pred_effects$fit,
+      lower = pred_effects$fit - 1.96 * pred_effects$se.fit,
+      upper = pred_effects$fit + 1.96 * pred_effects$se.fit
+    )
+    
+    # Plot parametric model with error handling for NA values
+    param_plot <- ggplot() +
+      geom_ribbon(data = pred_df, aes(x = horizons, ymin = lower, ymax = upper), 
+                 alpha = 0.2, fill = "blue") +
+      geom_line(data = pred_df, aes(x = horizons, y = effect), color = "blue", linewidth = 1.2) +
+      geom_point(data = valid_df, aes(x = horizon_sel, y = .data[[estimate_col]]), 
+                size = 3) +
+      geom_errorbar(data = valid_df, 
+                   aes(x = horizon_sel, 
+                       ymin = .data[[estimate_col]] - .data[[se_col]], 
+                       ymax = .data[[estimate_col]] + .data[[se_col]]), 
+                   width = 2)
+    
+    # Add peak line and annotation if peak is valid
+    if(!is.na(peak_time) && peak_time >= min(horizons) && peak_time <= max(horizons)) {
+      param_plot <- param_plot +
+        geom_vline(xintercept = peak_time, linetype = "dashed", color = "red") +
+        annotate("text", x = peak_time + 5, y = max(pred_df$upper), 
+                label = paste("Peak at", round(peak_time, 1), "months"), 
+                hjust = 0, color = "red")
+    }
+    
+    # Add title and labels
+    param_plot <- param_plot +
+      labs(title = paste("Parametric Time-Varying Treatment Effect Model -", result_type),
+           subtitle = if(!is.na(peak_time)) {
+             paste("Peak effect at", round(peak_time, 1), "months, effect half-life:", 
+                  ifelse(is.na(half_life), "Not reached", paste(round(half_life, 1), "months")))
+           } else {
+             "Peak effect could not be determined"
+           },
+           x = "Months after treatment",
+           y = paste("Treatment effect (", result_type, ")", sep = "")) +
+      theme_bw() +
+      theme(text = element_text(size = 12))
+    
+    ggsave(file.path(output_dir, paste0("parametric_temporal_effects_", result_type, ".png")), 
+           param_plot, width = 10, height = 7)
+    
+    # Save parametric model results
+    param_results <- list(
+      model = quad_model,
+      summary = summary(quad_model),
+      peak_time = peak_time,
+      peak_effect = peak_effect,
+      half_life = half_life,
+      predictions = pred_df
+    )
+    
+    saveRDS(param_results, file.path(output_dir, paste0("parametric_model_results_", result_type, ".rds")))
+    write.csv(pred_df, file.path(output_dir, paste0("parametric_predictions_", result_type, ".csv")), row.names = FALSE)
+  }
+  
+  # Method 2: Nonparametric approach using smoothing splines
+  if(method[1] == "nonparametric" || length(method) > 1) {
+    # Use weights based on standard errors
+    weights <- 1/se_values^2
+    
+    # Fit smoothing spline with cross-validation for optimal smoothing using valid data
+    tryCatch({
+      spline_model <- smooth.spline(horizons, estimates, w = weights, cv = TRUE)
+      
+      # Generate predictions
+      spline_pred <- predict(spline_model, seq(min(horizons), max(horizons), length.out = 100))
+      spline_df <- data.frame(horizons = spline_pred$x, effect = spline_pred$y)
+      
+      # Calculate derivative to find peaks and inflection points
+      spline_deriv <- predict(spline_model, spline_df$horizons, deriv = 1)
+      spline_deriv2 <- predict(spline_model, spline_df$horizons, deriv = 2)
+      
+      spline_df$derivative <- spline_deriv$y
+      spline_df$derivative2 <- spline_deriv2$y
+      
+      # Find where derivative crosses zero (peaks/troughs)
+      sign_changes <- diff(sign(spline_df$derivative))
+      peak_indices <- which(sign_changes < 0) + 1
+      trough_indices <- which(sign_changes > 0) + 1
+      
+      # Only keep peaks/troughs with sufficient magnitude
+      if(length(peak_indices) > 0) {
+        peak_time_np <- spline_df$horizons[peak_indices[which.max(spline_df$effect[peak_indices])]]
+        peak_effect_np <- max(spline_df$effect[peak_indices])
+      } else {
+        peak_time_np <- NA
+        peak_effect_np <- NA
+        warning("No peaks detected in nonparametric model")
+      }
+      
+      # Calculate acceleration/deceleration phases
+      inflection_indices <- which(diff(sign(spline_df$derivative2)) != 0) + 1
+      
+      # Plot nonparametric model
+      nonparam_plot <- ggplot() +
+        geom_line(data = spline_df, aes(x = horizons, y = effect), color = "blue", linewidth = 1.2) +
+        geom_point(data = valid_df, aes(x = horizon_sel, y = .data[[estimate_col]]), size = 3) +
+        geom_errorbar(data = valid_df, 
+                     aes(x = horizon_sel, 
+                         ymin = .data[[estimate_col]] - .data[[se_col]], 
+                         ymax = .data[[estimate_col]] + .data[[se_col]]), width = 2)
+      
+      # Add peak point if found
+      if(!is.na(peak_time_np)) {
+        nonparam_plot <- nonparam_plot +
+          geom_vline(xintercept = peak_time_np, linetype = "dashed", color = "red") +
+          annotate("text", x = peak_time_np + 5, y = max(valid_df[[estimate_col]]), 
+                  label = paste("Peak at", round(peak_time_np, 1), "months"), 
+                  hjust = 0, color = "red")
+      }
+      
+      # Add inflection points if found
+      if(length(inflection_indices) > 0) {
+        nonparam_plot <- nonparam_plot +
+          geom_vline(xintercept = spline_df$horizons[inflection_indices], 
+                    linetype = "dotted", color = "darkgreen", alpha = 0.7)
+      }
+      
+      nonparam_plot <- nonparam_plot +
+        labs(title = paste("Nonparametric Time-Varying Treatment Effect Model -", result_type),
+             subtitle = ifelse(!is.na(peak_time_np), 
+                              paste("Peak effect at", round(peak_time_np, 1), "months"), 
+                              "No clear peak detected"),
+             x = "Months after treatment",
+             y = paste("Treatment effect (", result_type, ")", sep = "")) +
+        theme_bw() +
+        theme(text = element_text(size = 12))
+      
+      ggsave(file.path(output_dir, paste0("nonparametric_temporal_effects_", result_type, ".png")), 
+             nonparam_plot, width = 10, height = 7)
+      
+      # Save nonparametric model results
+      nonparam_results <- list(
+        model = spline_model,
+        peak_time = peak_time_np,
+        peak_effect = peak_effect_np,
+        inflection_points = if(exists("inflection_indices")) spline_df$horizons[inflection_indices] else NULL,
+        predictions = spline_df
+      )
+      
+      saveRDS(nonparam_results, file.path(output_dir, paste0("nonparametric_model_results_", result_type, ".rds")))
+      write.csv(spline_df, file.path(output_dir, paste0("nonparametric_predictions_", result_type, ".csv")), row.names = FALSE)
+      
+    }, error = function(e) {
+      warning("Error in nonparametric modeling: ", e$message)
+      nonparam_results <- list(error = e$message)
+      saveRDS(nonparam_results, file.path(output_dir, paste0("nonparametric_model_results_error_", result_type, ".rds")))
+    })
+  }
+  
+  # Create combined visualization only if both models were successful
+  if(length(method) > 1 && exists("spline_df") && exists("pred_df") && 
+     !is.na(peak_time) && !is.na(peak_time_np)) {
+    
+    combined_plot <- ggplot() +
+      # Add nonparametric model
+      geom_line(data = spline_df, aes(x = horizons, y = effect, color = "Nonparametric"), 
+               linewidth = 1.2) +
+      # Add parametric model
+      geom_line(data = pred_df, aes(x = horizons, y = effect, color = "Parametric"), 
+               linewidth = 1.2) +
+      geom_ribbon(data = pred_df, aes(x = horizons, ymin = lower, ymax = upper), 
+                 alpha = 0.1, fill = "blue") +
+      # Add raw data points
+      geom_point(data = valid_df, aes(x = horizon_sel, y = .data[[estimate_col]]), 
+                size = 3, color = "black") +
+      geom_errorbar(data = valid_df, 
+                   aes(x = horizon_sel, 
+                       ymin = .data[[estimate_col]] - .data[[se_col]], 
+                       ymax = .data[[estimate_col]] + .data[[se_col]]), width = 2, color = "black")
+    
+    # Add peak lines if they exist and are within valid range
+    if(!is.na(peak_time) && peak_time >= min(horizons) && peak_time <= max(horizons)) {
+      combined_plot <- combined_plot +
+        geom_vline(xintercept = peak_time, linetype = "dashed", color = "blue")
+    }
+    
+    if(!is.na(peak_time_np) && peak_time_np >= min(horizons) && peak_time_np <= max(horizons)) {
+      combined_plot <- combined_plot +
+        geom_vline(xintercept = peak_time_np, linetype = "dashed", color = "red")
+    }
+    
+    # Add labels and styling
+    combined_plot <- combined_plot +
+      scale_color_manual(values = c("Parametric" = "blue", "Nonparametric" = "red"),
+                        name = "Model Type") +
+      labs(title = paste("Comparison of Time-Varying Treatment Effect Models -", result_type),
+           subtitle = paste("Parametric peak at", round(peak_time, 1), 
+                           "months, Nonparametric peak at", 
+                           round(peak_time_np, 1), "months"),
+           x = "Months after treatment",
+           y = paste("Treatment effect (", result_type, ")", sep = "")) +
+      theme_bw() +
+      theme(text = element_text(size = 12),
+            legend.position = "bottom")
+    
+    ggsave(file.path(output_dir, paste0("combined_temporal_effects_", result_type, ".png")), 
+           combined_plot, width = 12, height = 8)
+  }
+  
+  # Return comprehensive results
+  results <- list(
+    raw_data = valid_df
+  )
+  
+  if(method[1] == "parametric" || length(method) > 1) {
+    if(exists("param_results")) {
+      results$parametric <- param_results
+    } else {
+      results$parametric <- list(error = "Parametric modeling failed")
+    }
+  }
+  
+  if(method[1] == "nonparametric" || length(method) > 1) {
+    if(exists("nonparam_results")) {
+      results$nonparametric <- nonparam_results
+    } else {
+      results$nonparametric <- list(error = "Nonparametric modeling failed")
+    }
+  }
+  
+  return(results)
+}
+
+
 CSF_results <- implement_causal_forests(
   m_trainSet_X, m_trainSet_W, m_trainSet_times, m_trainSet_events,
   m_testSet_X, m_testSet_W, m_testSet_times, m_testSet_events,
@@ -676,6 +1014,33 @@ CSF_results <- implement_causal_forests(
 
 print(CSF_results$results_SP)
 print(CSF_results$results_RMST)
+
+time_varying_results_SP <- model_temporal_treatment_effects(
+  CSF_results$results_SP,
+  method = c("parametric", "nonparametric"),
+  output_dir = "time_varying_effects_results"
+)
+
+# Create summary of the temporal patterns
+temporal_patterns_summary <- data.frame(
+  Metric = "SP",
+  Parametric_Peak_Time = time_varying_results_SP$parametric$peak_time,
+  Parametric_Peak_Effect = time_varying_results_SP$parametric$peak_effect,
+  Parametric_Half_Life = time_varying_results_SP$parametric$half_life,
+  Nonparametric_Peak_Time = time_varying_results_SP$nonparametric$peak_time,
+  Nonparametric_Peak_Effect = time_varying_results_SP$nonparametric$peak_effect
+)
+
+write.csv(temporal_patterns_summary, "time_varying_effects_summary.csv", row.names = FALSE)
+
+# Compare to standard approach without time-varying effects modeling
+print("Standard approach vs. Time-varying effects framework:")
+print(paste("Standard approach identifies effects at discrete timepoints but cannot model the trajectory"))
+print(paste("Time-varying framework identifies peak effect at", 
+            round(time_varying_results_SP$parametric$peak_time, 1), 
+            "months with half-life of", 
+            round(time_varying_results_SP$parametric$half_life, 1), 
+            "months"))
 
 
 #########
